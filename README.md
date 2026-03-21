@@ -9,55 +9,37 @@ A decentralized micro-finance platform that enables underserved users (e.g. stre
 ```
 impactscore/
 ├── contracts/                  # Solidity smart contracts (Hardhat)
-│   ├── contracts/
-│   │   ├── ActivityRegistry.sol   # Stores tamper-proof activity hashes
-│   │   ├── ImpactScore.sol        # Score per wallet + category weights
-│   │   └── LoanManager.sol        # Automated loan decisions
-│   ├── scripts/
-│   │   └── deploy.js              # Deploys all 3 contracts in order
-│   ├── test/
-│   │   └── contracts.test.js      # Full unit test suite
-│   └── hardhat.config.js
+│   ├── ActivityRegistry.sol    # Stores verified activity hashes on-chain
+│   ├── ImpactScore.sol         # Manages wallet scores with category weights (capped at 1000)
+│   ├── LoanManager.sol         # Automated score-based loan tier decisions
+│   ├── deploy.js               # Deployment script
+│   └── test/contracts.test.js  # Unit tests
 │
-├── backend/                    # Node.js + Express REST API
-│   ├── config/
-│   │   ├── db.js                  # PostgreSQL pool
-│   │   └── 001_init.sql           # Schema migration
-│   ├── middleware/
-│   │   └── auth.js                # JWT + role-based access
-│   ├── routes/
-│   │   ├── auth.js                # POST /auth/signup, /login, /me
-│   │   ├── activity.js            # POST/GET /activity
-│   │   ├── verification.js        # POST /verify, GET /verify/pending
-│   │   ├── score.js               # GET /score
-│   │   ├── loan.js                # POST /loan/apply, GET /loan/status
-│   │   └── admin.js               # Admin-only management routes
-│   ├── services/
-│   │   ├── blockchain.js          # ethers.js on-chain interactions
-│   │   ├── scoreEngine.js         # Impact Score calculation + sync
-│   │   └── ipfs.js                # Pinata IPFS upload
-│   ├── scripts/
-│   │   └── seed.js                # Sample data for development
-│   └── server.js                  # Express entry point
+├── backend/                    # Node.js + Express
+│   ├── config/db.js            # PostgreSQL connection
+│   ├── middleware/auth.js      # JWT + role-based access
+│   ├── routes/                 # API endpoints (auth, activity, verification, score, loan, admin)
+│   ├── services/               # blockchain.js, scoreEngine.js, ipfs.js
+│   ├── scripts/seed.js         # Database seeding
+│   └── server.js               # Express server
 │
 └── frontend/                   # React.js + Tailwind CSS
-    └── src/
-        ├── context/
-        │   └── AuthContext.jsx    # JWT auth + MetaMask wallet state
-        ├── pages/
-        │   ├── Landing.jsx        # Hero, features, tier overview
-        │   ├── Login.jsx          # Email/password login
-        │   ├── Signup.jsx         # Role-based registration
-        │   ├── Dashboard.jsx      # Score + charts + activities + loans
-        │   ├── SubmitActivity.jsx # Submit health/education/sustainability
-        │   ├── VerifierPanel.jsx  # Approve/reject queue for verifiers
-        │   ├── LoanApplication.jsx# Apply for a loan via smart contract
-        │   └── AdminPanel.jsx     # Platform stats + user management
-        ├── components/
-        │   └── Navbar.jsx         # Responsive nav with wallet button
-        └── utils/
-            └── api.js             # Axios instance with JWT interceptor
+    ├── context/AuthContext.jsx # JWT & MetaMask integration
+    ├── pages/                  # Dashboard, SubmitActivity, VerifierPanel, LoanApplication, etc.
+    ├── components/Navbar.jsx   # Navigation
+    └── utils/api.js            # Axios with JWT interceptor
 ```
+
+---
+
+## 🏗️ How It Works
+
+**Workflow**: Borrower submits activity → Verifier approves & writes to blockchain → Score recalculated → Lender sees tier & approves/rejects loan
+
+**Key Components**:
+- **Backend (Node.js)**: Express API with JWT auth, PostgreSQL database, ethers.js blockchain integration, Pinata IPFS
+- **Smart Contracts (Solidity)**: ActivityRegistry (stores activity hashes), ImpactScore (maintains scores), LoanManager (tier-based decisions)
+- **Frontend (React)**: Role-based dashboard, MetaMask wallet binding, Chart.js visualizations
 
 ---
 
@@ -167,68 +149,35 @@ Opens at `http://localhost:3000`.
 
 ---
 
-## 🔌 API Reference
+## 🔌 API Endpoints
 
-| Method | Endpoint             | Auth         | Description                    |
-|--------|----------------------|--------------|-------------------------------|
-| POST   | `/auth/signup`       | —            | Register (email + role)        |
-| POST   | `/auth/login`        | —            | Login → JWT                    |
-| GET    | `/auth/me`           | Bearer       | Current user profile           |
-| PUT    | `/auth/wallet`       | Bearer       | Connect MetaMask wallet        |
-| POST   | `/activity`          | borrower     | Submit activity + doc upload   |
-| GET    | `/activity`          | Bearer       | List activities (role-filtered)|
-| GET    | `/verify/pending`    | verifier     | Queue of pending activities    |
-| POST   | `/verify`            | verifier     | Approve or reject activity     |
-| GET    | `/score`             | Bearer       | User's score + breakdown       |
-| POST   | `/score/sync`        | Bearer       | Force re-sync from blockchain  |
-| POST   | `/loan/apply`        | borrower     | Apply for micro-loan           |
-| GET    | `/loan/status`       | Bearer       | List user's loans              |
-| GET    | `/admin/users`       | admin        | All users with scores          |
-| PATCH  | `/admin/users/:id/role` | admin     | Change user role               |
-| GET    | `/admin/stats`       | admin        | Platform statistics            |
+| Category | Endpoints |
+|----------|-----------|
+| **Auth** | `POST /auth/signup` • `POST /auth/login` • `GET /auth/me` • `PUT /auth/wallet` |
+| **Activities** | `POST /activity` (borrower) • `GET /activity` • `GET /verify/pending` (verifier) • `POST /verify` (approve/reject) |
+| **Scoring** | `GET /score` • `POST /score/sync` |
+| **Loans** | `POST /loan/apply` • `GET /loan/status` • `GET /loan/pending` (lender) • `POST /loan/:id/decide` (lender) |
+| **Admin** | `GET /admin/users` • `PATCH /admin/users/:id/role` • `GET /admin/stats` |
 
 ---
 
-## ⛓️ Smart Contract Architecture
+## ⛓️ Smart Contracts
 
-### Scoring Logic
-
-```
-Category        Weight    Example
-─────────────────────────────────
-health          +10 pts   Vaccination, checkup
-education       +20 pts   Certificate, course
-sustainability  +15 pts   NGO work, eco activities
-
-MAX_SCORE = 1000
-```
-
-### Loan Decision Tree
-
-```
-Score > 80  →  LOW tier    5%  interest  max $5,000
-Score > 50  →  MEDIUM tier 12% interest  max $2,000
-Score 20-50 →  HIGH tier   20% interest  max $500
-Score < 20  →  AUTO-REJECT
-```
-
-### Contract Addresses (after deployment)
-
-Update these in `backend/.env` after running `scripts/deploy.js`.
+| Contract | Purpose |
+|----------|---------|
+| **ActivityRegistry** | Stores verified activity hashes on-chain; only verifiers can write; prevents duplicates |
+| **ImpactScore** | Maintains wallet → score mapping; category weights: health +10, education +20, sustainability +15; capped at 1000 |
+| **LoanManager** | Score > 80 → LOW tier (5%, max $5k) • Score > 50 → MEDIUM (12%, $2k) • Score ≥ 20 → HIGH (20%, $500) • Score < 20 → REJECT
 
 ---
 
-## 🔐 Security Design
+## 🔐 Security
 
-| Concern              | Solution                                              |
-|----------------------|-------------------------------------------------------|
-| Sensitive user data  | Stored off-chain in PostgreSQL (encrypted at rest)    |
-| Documents            | IPFS (content-addressed, tamper-evident)              |
-| Activity proofs      | Only keccak256 hashes stored on-chain                 |
-| Authentication       | JWT (HS256, 7-day expiry) + bcrypt (12 rounds)        |
-| Role enforcement     | Both backend middleware AND smart contract modifiers  |
-| Rate limiting        | 100 req/15min global, 20 req/15min on auth routes     |
-| Smart contract       | Only approved verifier wallets can write to chain     |
+- **Auth**: JWT (7-day expiry), bcrypt password hashing (12 rounds)
+- **API**: Rate limiting (100 req/15min global, 20 req/15min auth), Helmet headers, CORS
+- **Data**: PostgreSQL off-chain storage, IPFS for documents, only hashes on-chain
+- **Access**: Role-based middleware + smart contract modifiers
+- **Fraud Prevention**: Duplicate hash detection on-chain, score cap at 1000
 
 ---
 
@@ -264,29 +213,20 @@ npx vercel --prod
 
 ---
 
-## 🧪 Test Accounts (after seeding)
 
-| Email                | Password    | Role      | Score |
-|----------------------|-------------|-----------|-------|
-| borrower@demo.com    | password123 | borrower  | 90    |
-| borrower2@demo.com   | password123 | borrower  | 10    |
-| verifier@demo.com    | password123 | verifier  | —     |
-| lender@demo.com      | password123 | lender    | —     |
-| admin@demo.com       | password123 | admin     | —     |
+## ✨ Key Features
 
----
-
-## 🎯 Bonus Features Implemented
-
-- ✅ Mobile-responsive UI (Tailwind breakpoints throughout)
-- ✅ Score visualization with Chart.js (donut + bar charts)
-- ✅ IPFS document storage (Pinata integration)
-- ✅ Fraud prevention — duplicate hash detection on-chain
-- ✅ Score cap (MAX_SCORE = 1000) prevents overflow attacks
-- ✅ Role-based access at both API and smart contract level
+- ✅ Role-based access (Borrower, Verifier, Lender, Admin)
+- ✅ Activity submission with file upload & IPFS storage
+- ✅ Automatic score calculation from verified activities
+- ✅ Score-based loan tier system with lender override
+- ✅ On-chain activity hashing for fraud prevention
+- ✅ MetaMask wallet integration
+- ✅ Real-time EMI calculator
+- ✅ Admin dashboard with platform stats
+- ✅ Mobile-responsive UI (Tailwind CSS)
+- ✅ Data visualization (Chart.js)
 
 ---
 
-## 📜 License
 
-MIT
