@@ -13,9 +13,10 @@ export default function Navbar() {
   const handleLogout = () => { logout(); navigate("/"); };
 
   const navLinks = user ? [
-    { to: "/dashboard",        label: "Dashboard", roles: ["borrower", "lender", "admin", "verifier"] },
+    { to: "/dashboard",        label: "Dashboard",       roles: ["borrower", "lender", "admin", "verifier"] },
     { to: "/submit-activity",  label: "Submit Activity", roles: ["borrower"] },
     { to: "/loan",             label: "Apply Loan",      roles: ["borrower"] },
+    { to: "/lender",           label: "Loan Reviews",    roles: ["lender","admin"] },
     { to: "/verify",           label: "Verify",          roles: ["verifier", "admin"] },
     { to: "/admin",            label: "Admin",           roles: ["admin"] },
   ].filter((l) => l.roles.includes(user.role)) : [];

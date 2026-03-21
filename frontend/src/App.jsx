@@ -3,6 +3,7 @@ import React from "react";
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { ToastContainer } from "react-toastify";
 import "react-toastify/dist/ReactToastify.css";
+import LenderDashboard  from "./pages/LenderDashboard";
 
 import { AuthProvider, useAuth } from "./context/AuthContext";
 import Navbar          from "./components/Navbar";
@@ -52,6 +53,10 @@ export default function App() {
 
             <Route path="/loan" element={
               <PrivateRoute roles={["borrower"]}><LoanApplication /></PrivateRoute>
+            }/>
+
+            <Route path="/lender" element={
+              <PrivateRoute roles={["lender","admin"]}><LenderDashboard /></PrivateRoute>
             }/>
 
             <Route path="/admin" element={
