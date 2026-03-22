@@ -93,11 +93,24 @@ export default function LenderDashboard() {
     }));
   };
 
-  const decide = async (loanId, action) => {
+  const decide = async (loan, action) => {
+    const loanId = loan.id;
     const draft = form[loanId] || {};
+    const baselineAmount = Number(loan.amount || 0);
+    const baselineRate = Number(loan.interest_rate || 0);
+    const finalAmount = Number(draft.approved_amount || baselineAmount);
+    const finalRate = Number(draft.interest_rate || baselineRate);
+    const hasOverride =
+      action === "approve" &&
+      (finalAmount !== baselineAmount || finalRate !== baselineRate);
 
     if (action === "reject" && !draft.lender_note?.trim()) {
       toast.error("Please enter a rejection reason");
+      return;
+    }
+
+    if (hasOverride && !draft.lender_note?.trim()) {
+      toast.error("Please provide a reason when overriding amount or rate");
       return;
     }
 
@@ -585,6 +598,11 @@ export default function LenderDashboard() {
                             <p className="text-sm font-semibold text-gray-700 mb-3">
                               Decision Panel
                             </p>
+                            <div className="mb-3 rounded-lg border border-indigo-100 bg-indigo-50 p-3 text-xs text-indigo-700">
+                              Standard terms for this application:{" "}
+                              {formatINR(loan.amount)} at {loan.interest_rate}%
+                              . Add a reason if you override either value.
+                            </div>
                             <div className="grid sm:grid-cols-3 gap-3 mb-3">
                               <div>
                                 <label className="text-xs text-gray-500 block mb-1">
@@ -630,11 +648,11 @@ export default function LenderDashboard() {
 
                               <div>
                                 <label className="text-xs text-gray-500 block mb-1">
-                                  Note to borrower
+                                  Decision reason
                                 </label>
                                 <input
                                   type="text"
-                                  placeholder="Optional note or rejection reason"
+                                  placeholder="Required for reject or override"
                                   value={f.lender_note || ""}
                                   onChange={(e) =>
                                     setForm((prev) => ({
@@ -652,7 +670,7 @@ export default function LenderDashboard() {
 
                             <div className="flex gap-2">
                               <button
-                                onClick={() => decide(loan.id, "approve")}
+                                onClick={() => decide(loan, "approve")}
                                 disabled={deciding === loan.id}
                                 className="flex items-center gap-1.5 bg-green-600 text-white text-sm px-5 py-2 rounded-lg hover:bg-green-700 disabled:opacity-50 transition"
                               >
@@ -662,7 +680,7 @@ export default function LenderDashboard() {
                                   : "Approve Loan"}
                               </button>
                               <button
-                                onClick={() => decide(loan.id, "reject")}
+                                onClick={() => decide(loan, "reject")}
                                 disabled={deciding === loan.id}
                                 className="flex items-center gap-1.5 border border-red-200 text-red-600 text-sm px-5 py-2 rounded-lg hover:bg-red-50 disabled:opacity-50 transition"
                               >

@@ -7,6 +7,7 @@ const Activity = require("../models/Activity");
 const ImpactScore = require("../models/ImpactScore");
 const { authenticate, requireRole } = require("../middleware/auth");
 const scoreEngine = require("../services/scoreEngine");
+const { POLICY_LIMITS, getTermsForScore } = require("../services/loanPolicy");
 
 const router = express.Router();
 
@@ -46,6 +47,15 @@ router.post(
       const scoreData = await scoreEngine.getUserScore(req.user.id);
       const score = scoreData.score;
 
+      const borrower = await User.findById(req.user.id)
+        .select("kyc_status")
+        .lean();
+      if (borrower?.kyc_status !== "approved") {
+        return res.status(403).json({
+          error: "KYC approval is required before applying for a loan.",
+        });
+      }
+
       if (score < 20) {
         return res.status(400).json({
           error:
@@ -70,7 +80,7 @@ router.post(
         });
       }
 
-      const terms = calculateTerms(score);
+      const terms = getTermsForScore(score);
       if (amount > terms.maxAmount) {
         return res.status(400).json({
           error: `Your score tier allows a maximum of Rs ${terms.maxAmount}.`,
@@ -253,7 +263,7 @@ router.get(
 router.post(
   "/:id/decide",
   authenticate,
-  requireRole(["lender", "admin"]),
+  requireRole(["lender"]),
   [
     body("action").isIn(["approve", "reject"]),
     body("approved_amount").optional().isFloat({ min: 1 }),
@@ -287,6 +297,14 @@ router.post(
         loan.rejection_reason = lender_note;
         loan.lender_id = req.user.id;
         loan.decided_at = new Date();
+        loan.decision_history.push({
+          action: "reject",
+          decided_by: req.user.id,
+          decided_at: new Date(),
+          baseline_amount: loan.amount,
+          baseline_rate: loan.interest_rate,
+          reason: lender_note,
+        });
         await loan.save();
 
         return res.json({
@@ -295,8 +313,44 @@ router.post(
         });
       }
 
-      const finalAmount = approved_amount || loan.amount;
-      const finalRate = interest_rate || loan.interest_rate;
+      const baselineTerms = getTermsForScore(loan.score_at_apply);
+      const baselineAmount = Number(
+        baselineTerms.maxAmount || loan.amount || 0,
+      );
+      const baselineRate = Number(
+        baselineTerms.interestRate || loan.interest_rate || 0,
+      );
+
+      const finalAmount = Number(approved_amount || loan.amount);
+      const finalRate = Number(interest_rate || loan.interest_rate);
+
+      const hasOverride =
+        finalAmount !== Number(loan.amount) ||
+        finalRate !== Number(loan.interest_rate);
+
+      if (hasOverride && !lender_note?.trim()) {
+        return res.status(400).json({
+          error:
+            "A decision reason is required when overriding amount or interest rate.",
+        });
+      }
+
+      const maxAllowedAmount = Number(
+        (baselineAmount * POLICY_LIMITS.maxAmountOverrideMultiplier).toFixed(2),
+      );
+      const maxAllowedRate = baselineRate + POLICY_LIMITS.maxRateOverrideDelta;
+
+      if (finalAmount > maxAllowedAmount) {
+        return res.status(400).json({
+          error: `Approved amount exceeds override policy limit (${maxAllowedAmount}).`,
+        });
+      }
+
+      if (finalRate > maxAllowedRate) {
+        return res.status(400).json({
+          error: `Interest rate exceeds override policy limit (${maxAllowedRate}%).`,
+        });
+      }
 
       loan.status = "approved";
       loan.approved_amount = finalAmount;
@@ -304,6 +358,16 @@ router.post(
       loan.lender_note = lender_note || null;
       loan.lender_id = req.user.id;
       loan.decided_at = new Date();
+      loan.decision_history.push({
+        action: "approve",
+        decided_by: req.user.id,
+        decided_at: new Date(),
+        baseline_amount: baselineAmount,
+        baseline_rate: baselineRate,
+        approved_amount: finalAmount,
+        approved_rate: finalRate,
+        reason: lender_note || null,
+      });
       await loan.save();
 
       return res.json({ message: "Loan approved", loan: serializeLoan(loan) });
@@ -371,6 +435,12 @@ router.post("/:id/repay", authenticate, async (req, res) => {
     if (["lender"].includes(req.user.role)) {
       loan.status = "repaid";
       loan.repaid_at = new Date();
+      loan.decision_history.push({
+        action: "repay_confirm",
+        decided_by: req.user.id,
+        decided_at: new Date(),
+        reason: "Repayment confirmed",
+      });
       await loan.save();
       return res.json({
         message: "Repayment confirmed.",
@@ -383,14 +453,5 @@ router.post("/:id/repay", authenticate, async (req, res) => {
     return res.status(500).json({ error: "Repayment action failed" });
   }
 });
-
-// --- Helpers -----------------------------------------------------------------
-
-function calculateTerms(score) {
-  if (score < 20) return { tier: "none", interestRate: 0, maxAmount: 0 };
-  if (score > 80) return { tier: "low", interestRate: 5, maxAmount: 5000 };
-  if (score > 50) return { tier: "medium", interestRate: 12, maxAmount: 2000 };
-  return { tier: "high", interestRate: 20, maxAmount: 500 };
-}
 
 module.exports = router;

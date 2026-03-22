@@ -40,6 +40,26 @@ const loanSchema = new mongoose.Schema(
     purpose: { type: String, default: null },
     lender_note: { type: String, default: null },
     rejection_reason: { type: String, default: null },
+    decision_history: [
+      {
+        action: {
+          type: String,
+          enum: ["approve", "reject", "repay_confirm"],
+          required: true,
+        },
+        decided_by: {
+          type: mongoose.Schema.Types.ObjectId,
+          ref: "User",
+          required: true,
+        },
+        decided_at: { type: Date, default: Date.now },
+        baseline_amount: { type: Number, default: null },
+        baseline_rate: { type: Number, default: null },
+        approved_amount: { type: Number, default: null },
+        approved_rate: { type: Number, default: null },
+        reason: { type: String, default: null },
+      },
+    ],
     applied_at: { type: Date, default: Date.now },
     decided_at: { type: Date, default: null },
     repaid_at: { type: Date, default: null },

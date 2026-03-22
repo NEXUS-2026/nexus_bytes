@@ -121,7 +121,8 @@ export default function LoanApplication() {
     form.amount && rate
       ? calcEMI(Number(form.amount), rate, Number(form.duration_days))
       : 0;
-  const totalPayback = form.amount ? Number(form.amount) * (1 + rate / 100) : 0;
+  const previewMonths = Math.ceil(Number(form.duration_days || 0) / 30);
+  const totalPayback = form.amount && previewMonths ? emi * previewMonths : 0;
 
   return (
     <div className="max-w-3xl mx-auto px-4 py-10">
@@ -392,6 +393,9 @@ export default function LoanApplication() {
                       <span>{l.duration_days} days</span>
                       <span>{l.interest_rate}% interest</span>
                       <span className="capitalize">{l.tier} tier</span>
+                      {typeof l.score_at_apply === "number" && (
+                        <span>Score at apply: {l.score_at_apply}</span>
+                      )}
                       {l.purpose && <span>"{l.purpose}"</span>}
                     </div>
                     {l.rejection_reason && (

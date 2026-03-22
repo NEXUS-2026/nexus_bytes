@@ -7,6 +7,7 @@ const Activity = require("../models/Activity");
 const ImpactScore = require("../models/ImpactScore");
 const User = require("../models/User");
 const blockchainService = require("./blockchain");
+const { SCORE_MODEL_VERSION, getTermsForScore } = require("./loanPolicy");
 
 // Category weights (must match ImpactScore.sol constants)
 const WEIGHTS = {
@@ -23,47 +24,65 @@ const WEIGHTS = {
 async function syncUserScore(userId) {
   const objectUserId = new mongoose.Types.ObjectId(userId);
 
-  // 1. Sum verified activities
-  const activities = await Activity.aggregate([
-    {
-      $match: {
-        user_id: objectUserId,
-        status: "verified",
-      },
-    },
-    {
-      $group: {
-        _id: "$category",
-        count: { $sum: 1 },
-      },
-    },
-    {
-      $project: {
-        _id: 0,
-        category: "$_id",
-        count: 1,
-      },
-    },
-  ]);
+  // 1. Calculate weighted points from verified activities with recency factor.
+  const verifiedActivities = await Activity.find({
+    user_id: objectUserId,
+    status: "verified",
+  })
+    .select("category verified_at created_at")
+    .lean();
 
-  let score = 0;
-  for (const row of activities) {
-    const weight = WEIGHTS[row.category] || 0;
-    score += weight * Number(row.count);
+  let basePoints = 0;
+  let recencyPoints = 0;
+  const now = Date.now();
+  const monthMs = 30 * 24 * 60 * 60 * 1000;
+
+  for (const activity of verifiedActivities) {
+    const weight = WEIGHTS[activity.category] || 0;
+    basePoints += weight;
+
+    const activityDate = new Date(
+      activity.verified_at || activity.created_at || now,
+    );
+    const ageMonths = Math.max(0, (now - activityDate.getTime()) / monthMs);
+    const recencyMultiplier = Math.max(0.5, Math.exp(-ageMonths / 12));
+    recencyPoints += weight * recencyMultiplier;
   }
+
+  const recentVerifiedCount = verifiedActivities.filter((activity) => {
+    const activityDate = new Date(
+      activity.verified_at || activity.created_at || now,
+    );
+    return now - activityDate.getTime() <= monthMs;
+  }).length;
+
+  const consistencyBonus = Math.min(30, recentVerifiedCount * 2);
+  const totalBeforeCap = recencyPoints + consistencyBonus;
+  let score = totalBeforeCap;
 
   // Cap at 1000 (matches MAX_SCORE in contract)
   score = Math.min(score, 1000);
 
   // 2. Update local cache
-  await ImpactScore.findOneAndUpdate(
-    { user_id: objectUserId },
-    {
-      score,
-      last_synced_at: new Date(),
+  const scoreUpdate = {
+    score,
+    last_synced_at: new Date(),
+    score_model_version: SCORE_MODEL_VERSION,
+    components: {
+      base_points: Number(basePoints.toFixed(2)),
+      recency_points: Number(recencyPoints.toFixed(2)),
+      consistency_bonus: consistencyBonus,
+      recent_verified_count: recentVerifiedCount,
+      total_before_cap: Number(totalBeforeCap.toFixed(2)),
+      capped_score: Number(score.toFixed(2)),
     },
-    { upsert: true },
-  );
+    sync_status: "ok",
+    last_sync_error: null,
+  };
+
+  await ImpactScore.findOneAndUpdate({ user_id: objectUserId }, scoreUpdate, {
+    upsert: true,
+  });
 
   // 3. Try to push to blockchain (non-blocking)
   let txHash = null;
@@ -81,12 +100,32 @@ async function syncUserScore(userId) {
         // (In production, emit events instead of direct setScore)
         console.log(`[ScoreEngine] Pushing score ${score} for ${wallet}`);
       }
+    } else if (!wallet) {
+      await ImpactScore.findOneAndUpdate(
+        { user_id: objectUserId },
+        {
+          sync_status: "skipped_no_wallet",
+          last_sync_error: "Wallet not connected",
+        },
+      );
     }
   } catch (err) {
     console.warn("[ScoreEngine] Blockchain sync skipped:", err.message);
+    await ImpactScore.findOneAndUpdate(
+      { user_id: objectUserId },
+      {
+        sync_status: "pending_retry",
+        last_sync_error: err.message,
+      },
+    );
   }
 
-  return { score, activities, txHash };
+  return {
+    score,
+    components: scoreUpdate.components,
+    verifiedActivities: verifiedActivities.length,
+    txHash,
+  };
 }
 
 /**
@@ -97,7 +136,9 @@ async function getUserScore(userId) {
 
   // Score cache
   const scoreRows = await ImpactScore.findOne({ user_id: objectUserId })
-    .select("score last_synced_at")
+    .select(
+      "score last_synced_at score_model_version components sync_status last_sync_error",
+    )
     .lean();
 
   // Detailed breakdown
@@ -129,36 +170,27 @@ async function getUserScore(userId) {
   ]);
 
   const score = scoreRows?.score ?? 0;
-
-  // Compute tier
-  let tier = "none";
-  if (score > 80) tier = "low";
-  else if (score > 50) tier = "medium";
-  else if (score >= 20) tier = "high";
+  const terms = getTermsForScore(score);
 
   // Eligible for loan?
   const loanEligible = score >= 20;
 
   return {
     score,
-    tier,
+    tier: terms.tier,
     loanEligible,
-    maxLoanAmount: tierToMax(tier),
-    interestRate: tierToRate(tier),
+    maxLoanAmount: terms.maxAmount,
+    interestRate: terms.interestRate,
     breakdown: buildBreakdown(breakdown),
     lastSynced: scoreRows?.last_synced_at || null,
+    scoreModelVersion: scoreRows?.score_model_version || "v1_basic",
+    components: scoreRows?.components || null,
+    syncStatus: scoreRows?.sync_status || "ok",
+    syncError: scoreRows?.last_sync_error || null,
   };
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
-
-function tierToMax(tier) {
-  return { low: 5000, medium: 2000, high: 500, none: 0 }[tier] ?? 0;
-}
-
-function tierToRate(tier) {
-  return { low: 5, medium: 12, high: 20, none: 0 }[tier] ?? 0;
-}
 
 function buildBreakdown(rows) {
   const base = {
