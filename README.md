@@ -16,7 +16,7 @@ impactscore/
 │   └── test/contracts.test.js  # Unit tests
 │
 ├── backend/                    # Node.js + Express
-│   ├── config/db.js            # PostgreSQL connection
+│   ├── config/db.js            # MongoDB Atlas connection
 │   ├── middleware/auth.js      # JWT + role-based access
 │   ├── routes/                 # API endpoints (auth, activity, verification, score, loan, admin)
 │   ├── services/               # blockchain.js, scoreEngine.js, ipfs.js
@@ -37,7 +37,8 @@ impactscore/
 **Workflow**: Borrower submits activity → Verifier approves & writes to blockchain → Score recalculated → Lender sees tier & approves/rejects loan
 
 **Key Components**:
-- **Backend (Node.js)**: Express API with JWT auth, PostgreSQL database, ethers.js blockchain integration, Pinata IPFS
+
+- **Backend (Node.js)**: Express API with JWT auth, MongoDB Atlas database, ethers.js blockchain integration, Pinata IPFS
 - **Smart Contracts (Solidity)**: ActivityRegistry (stores activity hashes), ImpactScore (maintains scores), LoanManager (tier-based decisions)
 - **Frontend (React)**: Role-based dashboard, MetaMask wallet binding, Chart.js visualizations
 
@@ -48,7 +49,7 @@ impactscore/
 ### Prerequisites
 
 - Node.js ≥ 18
-- PostgreSQL ≥ 14
+- MongoDB Atlas cluster (or local MongoDB for development)
 - MetaMask browser extension
 - Git
 
@@ -70,6 +71,7 @@ npm run deploy:local
 The deploy script prints contract addresses and saves them to `contracts/deployed-addresses.json`.
 
 **Run tests:**
+
 ```bash
 npm test
 # or with gas report:
@@ -77,6 +79,7 @@ REPORT_GAS=true npm test
 ```
 
 **Deploy to Polygon Mumbai testnet:**
+
 ```bash
 # Set in contracts/.env:
 POLYGON_MUMBAI_RPC=https://rpc-mumbai.maticvigil.com
@@ -99,34 +102,69 @@ cp .env.example .env
 ```
 
 **Configure `.env`:**
+
 ```env
 PORT=5000
-DATABASE_URL=postgresql://user:pass@localhost:5432/impactscore
+MONGODB_URI=mongodb+srv://<username>:<password>@<cluster>.mongodb.net/?retryWrites=true&w=majority&appName=<app-name>
+MONGODB_DB_NAME=impactscore
 JWT_SECRET=your-32-char-secret
 RPC_URL=http://127.0.0.1:8545        # or Mumbai RPC
 BACKEND_WALLET_PRIVATE_KEY=0x...     # Hardhat account #0 for local dev
 CONTRACT_ACTIVITY_REGISTRY=0x...     # From deployed-addresses.json
 CONTRACT_IMPACT_SCORE=0x...
 CONTRACT_LOAN_MANAGER=0x...
-PINATA_JWT=                          # Optional — leave blank for mock IPFS
+PINATA_JWT=                          # Preferred Pinata auth
+# or use PINATA_API_KEY and PINATA_API_SECRET
+PINATA_API_KEY=
+PINATA_API_SECRET=
+IPFS_GATEWAY_BASE=                   # Optional (defaults to Pinata gateway)
 ```
 
-**Database setup:**
-```bash
-createdb impactscore
-psql impactscore < config/001_init.sql
+### Pinata Setup (Recommended for real document links)
 
-# Seed sample data (optional)
+Why Pinata is used:
+
+- The app stores uploaded activity documents on IPFS and keeps only references in the DB.
+- Pinata makes IPFS pinning reliable and keeps files available (instead of temporary/mock local links).
+- Verifiers can open borrower documents through stable gateway URLs.
+
+Steps to configure Pinata:
+
+1. Create a Pinata account at https://pinata.cloud.
+2. In Pinata, create an API key (or JWT) with `pinFileToIPFS` permission.
+3. In `backend/.env`, set one of:
+   - `PINATA_JWT=<your_jwt>`
+   - or `PINATA_API_KEY=<your_key>` and `PINATA_API_SECRET=<your_secret>`
+4. Optional: set `IPFS_GATEWAY_BASE` if you want a custom gateway.
+5. Restart backend (`npm run dev` in `backend`).
+
+Behavior after setup:
+
+- New uploaded activity documents are pinned to IPFS via Pinata.
+- Verifier "Document" button opens IPFS gateway URL directly.
+- If Pinata credentials are missing, app automatically falls back to local file storage for development.
+
+**Database setup:**
+
+1. Create a MongoDB Atlas cluster and database user.
+2. Whitelist your IP in Atlas Network Access.
+3. Put the connection string in `MONGODB_URI` in `backend/.env`.
+
+Then seed sample data (optional):
+
+```bash
 node scripts/seed.js
 ```
 
 **Start the API:**
+
 ```bash
 npm run dev       # Development (nodemon)
 npm start         # Production
 ```
 
 The API runs at `http://localhost:5000`. Test with:
+
 ```bash
 curl http://localhost:5000/health
 ```
@@ -151,23 +189,23 @@ Opens at `http://localhost:3000`.
 
 ## 🔌 API Endpoints
 
-| Category | Endpoints |
-|----------|-----------|
-| **Auth** | `POST /auth/signup` • `POST /auth/login` • `GET /auth/me` • `PUT /auth/wallet` |
+| Category       | Endpoints                                                                                                          |
+| -------------- | ------------------------------------------------------------------------------------------------------------------ |
+| **Auth**       | `POST /auth/signup` • `POST /auth/login` • `GET /auth/me` • `PUT /auth/wallet`                                     |
 | **Activities** | `POST /activity` (borrower) • `GET /activity` • `GET /verify/pending` (verifier) • `POST /verify` (approve/reject) |
-| **Scoring** | `GET /score` • `POST /score/sync` |
-| **Loans** | `POST /loan/apply` • `GET /loan/status` • `GET /loan/pending` (lender) • `POST /loan/:id/decide` (lender) |
-| **Admin** | `GET /admin/users` • `PATCH /admin/users/:id/role` • `GET /admin/stats` |
+| **Scoring**    | `GET /score` • `POST /score/sync`                                                                                  |
+| **Loans**      | `POST /loan/apply` • `GET /loan/status` • `GET /loan/pending` (lender) • `POST /loan/:id/decide` (lender)          |
+| **Admin**      | `GET /admin/users` • `PATCH /admin/users/:id/role` • `GET /admin/stats`                                            |
 
 ---
 
 ## ⛓️ Smart Contracts
 
-| Contract | Purpose |
-|----------|---------|
-| **ActivityRegistry** | Stores verified activity hashes on-chain; only verifiers can write; prevents duplicates |
-| **ImpactScore** | Maintains wallet → score mapping; category weights: health +10, education +20, sustainability +15; capped at 1000 |
-| **LoanManager** | Score > 80 → LOW tier (5%, max $5k) • Score > 50 → MEDIUM (12%, $2k) • Score ≥ 20 → HIGH (20%, $500) • Score < 20 → REJECT
+| Contract             | Purpose                                                                                                                    |
+| -------------------- | -------------------------------------------------------------------------------------------------------------------------- |
+| **ActivityRegistry** | Stores verified activity hashes on-chain; only verifiers can write; prevents duplicates                                    |
+| **ImpactScore**      | Maintains wallet → score mapping; category weights: health +10, education +20, sustainability +15; capped at 1000          |
+| **LoanManager**      | Score > 80 → LOW tier (5%, max $5k) • Score > 50 → MEDIUM (12%, $2k) • Score ≥ 20 → HIGH (20%, $500) • Score < 20 → REJECT |
 
 ---
 
@@ -175,7 +213,7 @@ Opens at `http://localhost:3000`.
 
 - **Auth**: JWT (7-day expiry), bcrypt password hashing (12 rounds)
 - **API**: Rate limiting (100 req/15min global, 20 req/15min auth), Helmet headers, CORS
-- **Data**: PostgreSQL off-chain storage, IPFS for documents, only hashes on-chain
+- **Data**: MongoDB Atlas off-chain storage, IPFS for documents, only hashes on-chain
 - **Access**: Role-based middleware + smart contract modifiers
 - **Fraud Prevention**: Duplicate hash detection on-chain, score cap at 1000
 
@@ -212,7 +250,6 @@ npx vercel --prod
 ```
 
 ---
-
 
 ## ✨ Key Features
 

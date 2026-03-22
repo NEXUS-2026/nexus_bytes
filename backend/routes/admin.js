@@ -1,83 +1,171 @@
-// routes/admin.js
-const express  = require("express");
-const db       = require("../config/db");
+const express = require("express");
+const mongoose = require("mongoose");
+const User = require("../models/User");
+const Activity = require("../models/Activity");
+const Loan = require("../models/Loan");
+const ImpactScore = require("../models/ImpactScore");
 const { authenticate, requireRole } = require("../middleware/auth");
 const scoreEngine = require("../services/scoreEngine");
 
 const router = express.Router();
 
-// ─── GET /admin/users — list all users ───────────────────────────────────────
+// --- GET /admin/users --------------------------------------------------------
 
 router.get("/users", authenticate, requireRole("admin"), async (req, res) => {
-  const { rows } = await db.query(
-    `SELECT u.id, u.email, u.full_name, u.role, u.wallet_address,
-            u.kyc_status, u.created_at,
-            COALESCE(s.score, 0) AS score
-     FROM users u
-     LEFT JOIN impact_scores s ON s.user_id = u.id
-     ORDER BY u.created_at DESC`
+  const users = await User.find({}).sort({ created_at: -1 }).lean();
+
+  const scoreRows = await ImpactScore.find({
+    user_id: { $in: users.map((u) => u._id) },
+  })
+    .select("user_id score")
+    .lean();
+
+  const scoreMap = new Map(
+    scoreRows.map((s) => [s.user_id.toString(), s.score]),
   );
-  res.json(rows);
-});
 
-// ─── PATCH /admin/users/:id/role — change a user's role ──────────────────────
-
-router.patch("/users/:id/role", authenticate, requireRole("admin"), async (req, res) => {
-  const { role } = req.body;
-  const allowed  = ["borrower", "verifier", "lender", "admin"];
-  if (!allowed.includes(role))
-    return res.status(400).json({ error: "Invalid role" });
-
-  const { rows } = await db.query(
-    "UPDATE users SET role = $1 WHERE id = $2 RETURNING id, email, role",
-    [role, req.params.id]
+  res.json(
+    users.map((u) => ({
+      id: u._id.toString(),
+      email: u.email,
+      full_name: u.full_name,
+      role: u.role,
+      wallet_address: u.wallet_address,
+      kyc_status: u.kyc_status,
+      created_at: u.created_at,
+      score: scoreMap.get(u._id.toString()) || 0,
+    })),
   );
-  if (!rows.length) return res.status(404).json({ error: "User not found" });
-  res.json(rows[0]);
 });
 
-// ─── PATCH /admin/users/:id/kyc — approve or reject KYC ─────────────────────
+// --- PATCH /admin/users/:id/role --------------------------------------------
 
-router.patch("/users/:id/kyc", authenticate, requireRole("admin"), async (req, res) => {
-  const { status } = req.body;
-  if (!["approved", "rejected"].includes(status))
-    return res.status(400).json({ error: "status must be approved or rejected" });
+router.patch(
+  "/users/:id/role",
+  authenticate,
+  requireRole("admin"),
+  async (req, res) => {
+    const { role } = req.body;
+    const allowed = ["borrower", "verifier", "lender", "admin"];
+    if (!allowed.includes(role))
+      return res.status(400).json({ error: "Invalid role" });
 
-  const { rows } = await db.query(
-    "UPDATE users SET kyc_status = $1 WHERE id = $2 RETURNING id, email, kyc_status",
-    [status, req.params.id]
-  );
-  res.json(rows[0]);
-});
+    if (!mongoose.isValidObjectId(req.params.id)) {
+      return res.status(404).json({ error: "User not found" });
+    }
 
-// ─── POST /admin/score/recalculate-all — recalculate all scores ──────────────
+    const user = await User.findByIdAndUpdate(
+      req.params.id,
+      { role },
+      { new: true },
+    )
+      .select("email role")
+      .lean();
 
-router.post("/score/recalculate-all", authenticate, requireRole("admin"), async (req, res) => {
-  const { rows: users } = await db.query("SELECT id FROM users WHERE role = 'borrower'");
-  const results = [];
-  for (const u of users) {
-    const r = await scoreEngine.syncUserScore(u.id);
-    results.push({ userId: u.id, score: r.score });
-  }
-  res.json({ recalculated: results.length, results });
-});
+    if (!user) return res.status(404).json({ error: "User not found" });
 
-// ─── GET /admin/stats — platform overview ────────────────────────────────────
+    res.json({ id: user._id.toString(), email: user.email, role: user.role });
+  },
+);
+
+// --- PATCH /admin/users/:id/kyc ---------------------------------------------
+
+router.patch(
+  "/users/:id/kyc",
+  authenticate,
+  requireRole("admin"),
+  async (req, res) => {
+    const { status } = req.body;
+    if (!["approved", "rejected"].includes(status)) {
+      return res
+        .status(400)
+        .json({ error: "status must be approved or rejected" });
+    }
+
+    if (!mongoose.isValidObjectId(req.params.id)) {
+      return res.status(404).json({ error: "User not found" });
+    }
+
+    const user = await User.findByIdAndUpdate(
+      req.params.id,
+      { kyc_status: status },
+      { new: true },
+    )
+      .select("email kyc_status")
+      .lean();
+
+    if (!user) return res.status(404).json({ error: "User not found" });
+
+    res.json({
+      id: user._id.toString(),
+      email: user.email,
+      kyc_status: user.kyc_status,
+    });
+  },
+);
+
+// --- POST /admin/score/recalculate-all --------------------------------------
+
+router.post(
+  "/score/recalculate-all",
+  authenticate,
+  requireRole("admin"),
+  async (req, res) => {
+    const users = await User.find({ role: "borrower" }).select("_id").lean();
+    const results = [];
+
+    for (const u of users) {
+      const r = await scoreEngine.syncUserScore(u._id.toString());
+      results.push({ userId: u._id.toString(), score: r.score });
+    }
+
+    res.json({ recalculated: results.length, results });
+  },
+);
+
+// --- GET /admin/stats --------------------------------------------------------
 
 router.get("/stats", authenticate, requireRole("admin"), async (req, res) => {
-  const [users, activities, loans, scores] = await Promise.all([
-    db.query("SELECT COUNT(*) FROM users"),
-    db.query("SELECT status, COUNT(*) FROM activities GROUP BY status"),
-    db.query("SELECT status, COUNT(*), SUM(amount) FROM loans GROUP BY status"),
-    db.query("SELECT AVG(score) AS avg_score, MAX(score) AS max_score FROM impact_scores"),
+  const [totalUsers, activityStats, loanStats, scoreStats] = await Promise.all([
+    User.countDocuments(),
+    Activity.aggregate([
+      { $group: { _id: "$status", count: { $sum: 1 } } },
+      { $project: { _id: 0, status: "$_id", count: 1 } },
+    ]),
+    Loan.aggregate([
+      {
+        $group: {
+          _id: "$status",
+          count: { $sum: 1 },
+          total: { $sum: { $ifNull: ["$amount", 0] } },
+        },
+      },
+      { $project: { _id: 0, status: "$_id", count: 1, total: 1 } },
+    ]),
+    ImpactScore.aggregate([
+      {
+        $group: {
+          _id: null,
+          avg_score: { $avg: "$score" },
+          max_score: { $max: "$score" },
+        },
+      },
+      { $project: { _id: 0, avg_score: 1, max_score: 1 } },
+    ]),
   ]);
 
   res.json({
-    totalUsers:  Number(users.rows[0].count),
-    activities:  Object.fromEntries(activities.rows.map((r) => [r.status, Number(r.count)])),
-    loans:       loans.rows.map((r) => ({ status: r.status, count: Number(r.count), total: Number(r.sum || 0) })),
-    avgScore:    Number(scores.rows[0].avg_score || 0).toFixed(1),
-    maxScore:    Number(scores.rows[0].max_score || 0),
+    totalUsers,
+    activities: Object.fromEntries(
+      activityStats.map((r) => [r.status, Number(r.count)]),
+    ),
+    loans: loanStats.map((r) => ({
+      status: r.status,
+      count: Number(r.count),
+      total: Number(r.total || 0),
+    })),
+    avgScore: Number(scoreStats[0]?.avg_score || 0).toFixed(1),
+    maxScore: Number(scoreStats[0]?.max_score || 0),
   });
 });
 

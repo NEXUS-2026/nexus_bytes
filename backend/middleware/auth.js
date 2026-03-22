@@ -1,6 +1,6 @@
 // middleware/auth.js
 const jwt = require("jsonwebtoken");
-const db  = require("../config/db");
+const User = require("../models/User");
 
 /**
  * Verifies JWT from Authorization: Bearer <token>
@@ -15,12 +15,18 @@ const authenticate = async (req, res, next) => {
   const token = header.split(" ")[1];
   try {
     const payload = jwt.verify(token, process.env.JWT_SECRET);
-    const { rows } = await db.query(
-      "SELECT id, email, role, wallet_address FROM users WHERE id = $1",
-      [payload.userId]
-    );
-    if (!rows.length) return res.status(401).json({ error: "User not found" });
-    req.user = rows[0];
+    const user = await User.findById(payload.userId)
+      .select("email role wallet_address")
+      .lean();
+
+    if (!user) return res.status(401).json({ error: "User not found" });
+
+    req.user = {
+      id: user._id.toString(),
+      email: user.email,
+      role: user.role,
+      wallet_address: user.wallet_address,
+    };
     next();
   } catch (err) {
     return res.status(401).json({ error: "Invalid or expired token" });

@@ -1,8 +1,7 @@
 // routes/score.js
-const express      = require("express");
-const db           = require("../config/db");
+const express = require("express");
 const { authenticate, requireRole } = require("../middleware/auth");
-const scoreEngine  = require("../services/scoreEngine");
+const scoreEngine = require("../services/scoreEngine");
 const blockchainService = require("../services/blockchain");
 
 const router = express.Router();
@@ -21,14 +20,19 @@ router.get("/", authenticate, async (req, res) => {
 
 // ─── GET /score/:userId — admin can fetch any user's score ───────────────────
 
-router.get("/:userId", authenticate, requireRole(["admin", "lender"]), async (req, res) => {
-  try {
-    const score = await scoreEngine.getUserScore(Number(req.params.userId));
-    res.json(score);
-  } catch (err) {
-    res.status(500).json({ error: "Failed to fetch score" });
-  }
-});
+router.get(
+  "/:userId",
+  authenticate,
+  requireRole(["lender"]),
+  async (req, res) => {
+    try {
+      const score = await scoreEngine.getUserScore(req.params.userId);
+      res.json(score);
+    } catch (err) {
+      res.status(500).json({ error: "Failed to fetch score" });
+    }
+  },
+);
 
 // ─── POST /score/sync — force re-sync score from blockchain ──────────────────
 

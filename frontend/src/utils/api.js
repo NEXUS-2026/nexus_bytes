@@ -1,8 +1,20 @@
 // src/utils/api.js
 import axios from "axios";
 
+const configuredBaseURL = process.env.REACT_APP_API_URL?.trim();
+const isLocalBackendURL =
+  configuredBaseURL === "http://localhost:5000" ||
+  configuredBaseURL === "http://127.0.0.1:5000";
+
+// In CRA development, prefer relative API paths so the dev proxy handles routing.
+// This avoids CORS mismatches when frontend runs on non-default ports (e.g. 3001).
+const baseURL =
+  process.env.NODE_ENV === "development" && isLocalBackendURL
+    ? "/"
+    : configuredBaseURL || "/";
+
 const api = axios.create({
-  baseURL: process.env.REACT_APP_API_URL || "/",
+  baseURL,
 });
 
 // Attach JWT automatically
@@ -21,7 +33,7 @@ api.interceptors.response.use(
       window.location.href = "/login";
     }
     return Promise.reject(err);
-  }
+  },
 );
 
 export default api;

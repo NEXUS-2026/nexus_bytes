@@ -1,14 +1,17 @@
 // services/scoreEngine.js
-// Calculates the Impact Score from verified activities in PostgreSQL
+// Calculates the Impact Score from verified activities in MongoDB
 // and syncs it to the blockchain.
 
-const db = require("../config/db");
+const mongoose = require("mongoose");
+const Activity = require("../models/Activity");
+const ImpactScore = require("../models/ImpactScore");
+const User = require("../models/User");
 const blockchainService = require("./blockchain");
 
 // Category weights (must match ImpactScore.sol constants)
 const WEIGHTS = {
-  health:         10,
-  education:      20,
+  health: 10,
+  education: 20,
   sustainability: 15,
 };
 
@@ -18,14 +21,30 @@ const WEIGHTS = {
  * @returns { score, activities, txHash? }
  */
 async function syncUserScore(userId) {
+  const objectUserId = new mongoose.Types.ObjectId(userId);
+
   // 1. Sum verified activities
-  const { rows: activities } = await db.query(
-    `SELECT category, COUNT(*) AS count
-     FROM activities
-     WHERE user_id = $1 AND status = 'verified'
-     GROUP BY category`,
-    [userId]
-  );
+  const activities = await Activity.aggregate([
+    {
+      $match: {
+        user_id: objectUserId,
+        status: "verified",
+      },
+    },
+    {
+      $group: {
+        _id: "$category",
+        count: { $sum: 1 },
+      },
+    },
+    {
+      $project: {
+        _id: 0,
+        category: "$_id",
+        count: 1,
+      },
+    },
+  ]);
 
   let score = 0;
   for (const row of activities) {
@@ -37,22 +56,22 @@ async function syncUserScore(userId) {
   score = Math.min(score, 1000);
 
   // 2. Update local cache
-  await db.query(
-    `INSERT INTO impact_scores (user_id, score, last_synced_at)
-     VALUES ($1, $2, NOW())
-     ON CONFLICT (user_id)
-     DO UPDATE SET score = $2, last_synced_at = NOW()`,
-    [userId, score]
+  await ImpactScore.findOneAndUpdate(
+    { user_id: objectUserId },
+    {
+      score,
+      last_synced_at: new Date(),
+    },
+    { upsert: true },
   );
 
   // 3. Try to push to blockchain (non-blocking)
   let txHash = null;
   try {
-    const { rows: userRows } = await db.query(
-      "SELECT wallet_address FROM users WHERE id = $1",
-      [userId]
-    );
-    const wallet = userRows[0]?.wallet_address;
+    const user = await User.findById(objectUserId)
+      .select("wallet_address")
+      .lean();
+    const wallet = user?.wallet_address;
 
     if (wallet && process.env.CONTRACT_IMPACT_SCORE) {
       // Only push if the on-chain score differs
@@ -74,30 +93,46 @@ async function syncUserScore(userId) {
  * Returns the cached score + breakdown for a user.
  */
 async function getUserScore(userId) {
+  const objectUserId = new mongoose.Types.ObjectId(userId);
+
   // Score cache
-  const { rows: scoreRows } = await db.query(
-    "SELECT score, last_synced_at FROM impact_scores WHERE user_id = $1",
-    [userId]
-  );
+  const scoreRows = await ImpactScore.findOne({ user_id: objectUserId })
+    .select("score last_synced_at")
+    .lean();
 
   // Detailed breakdown
-  const { rows: breakdown } = await db.query(
-    `SELECT
-       category,
-       COUNT(*) FILTER (WHERE status = 'verified') AS verified,
-       COUNT(*) FILTER (WHERE status = 'pending')  AS pending,
-       COUNT(*) FILTER (WHERE status = 'rejected') AS rejected
-     FROM activities
-     WHERE user_id = $1
-     GROUP BY category`,
-    [userId]
-  );
+  const breakdown = await Activity.aggregate([
+    { $match: { user_id: objectUserId } },
+    {
+      $group: {
+        _id: "$category",
+        verified: {
+          $sum: { $cond: [{ $eq: ["$status", "verified"] }, 1, 0] },
+        },
+        pending: {
+          $sum: { $cond: [{ $eq: ["$status", "pending"] }, 1, 0] },
+        },
+        rejected: {
+          $sum: { $cond: [{ $eq: ["$status", "rejected"] }, 1, 0] },
+        },
+      },
+    },
+    {
+      $project: {
+        _id: 0,
+        category: "$_id",
+        verified: 1,
+        pending: 1,
+        rejected: 1,
+      },
+    },
+  ]);
 
-  const score = scoreRows[0]?.score ?? 0;
+  const score = scoreRows?.score ?? 0;
 
   // Compute tier
   let tier = "none";
-  if (score > 80)  tier = "low";
+  if (score > 80) tier = "low";
   else if (score > 50) tier = "medium";
   else if (score >= 20) tier = "high";
 
@@ -109,9 +144,9 @@ async function getUserScore(userId) {
     tier,
     loanEligible,
     maxLoanAmount: tierToMax(tier),
-    interestRate:  tierToRate(tier),
-    breakdown:     buildBreakdown(breakdown),
-    lastSynced:    scoreRows[0]?.last_synced_at || null,
+    interestRate: tierToRate(tier),
+    breakdown: buildBreakdown(breakdown),
+    lastSynced: scoreRows?.last_synced_at || null,
   };
 }
 
@@ -127,16 +162,34 @@ function tierToRate(tier) {
 
 function buildBreakdown(rows) {
   const base = {
-    health:         { verified: 0, pending: 0, rejected: 0, points: 0, weight: WEIGHTS.health },
-    education:      { verified: 0, pending: 0, rejected: 0, points: 0, weight: WEIGHTS.education },
-    sustainability: { verified: 0, pending: 0, rejected: 0, points: 0, weight: WEIGHTS.sustainability },
+    health: {
+      verified: 0,
+      pending: 0,
+      rejected: 0,
+      points: 0,
+      weight: WEIGHTS.health,
+    },
+    education: {
+      verified: 0,
+      pending: 0,
+      rejected: 0,
+      points: 0,
+      weight: WEIGHTS.education,
+    },
+    sustainability: {
+      verified: 0,
+      pending: 0,
+      rejected: 0,
+      points: 0,
+      weight: WEIGHTS.sustainability,
+    },
   };
   for (const row of rows) {
     if (!base[row.category]) continue;
     base[row.category].verified = Number(row.verified);
-    base[row.category].pending  = Number(row.pending);
+    base[row.category].pending = Number(row.pending);
     base[row.category].rejected = Number(row.rejected);
-    base[row.category].points   = Number(row.verified) * WEIGHTS[row.category];
+    base[row.category].points = Number(row.verified) * WEIGHTS[row.category];
   }
   return base;
 }

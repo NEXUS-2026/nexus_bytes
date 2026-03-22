@@ -1,59 +1,82 @@
 // server.js — Express entry point
-const express      = require("express");
-const cors         = require("cors");
-const helmet       = require("helmet");
-const morgan       = require("morgan");
-const rateLimit    = require("express-rate-limit");
+const express = require("express");
+const cors = require("cors");
+const helmet = require("helmet");
+const morgan = require("morgan");
+const rateLimit = require("express-rate-limit");
+const path = require("path");
 require("dotenv").config();
 
-const authRoutes         = require("./routes/auth");
-const activityRoutes     = require("./routes/activity");
+const authRoutes = require("./routes/auth");
+const activityRoutes = require("./routes/activity");
 const verificationRoutes = require("./routes/verification");
-const scoreRoutes        = require("./routes/score");
-const loanRoutes         = require("./routes/loan");
-const adminRoutes        = require("./routes/admin");
+const scoreRoutes = require("./routes/score");
+const loanRoutes = require("./routes/loan");
+const { connectDB } = require("./config/db");
 
-const app  = express();
-app.set('trust proxy', 1);
+const app = express();
+app.set("trust proxy", 1);
 
 const PORT = process.env.PORT || 5000;
+const isProduction = process.env.NODE_ENV === "production";
+const enableRateLimitInDev =
+  String(process.env.ENABLE_RATE_LIMIT_IN_DEV || "false").toLowerCase() ===
+  "true";
+const shouldApplyRateLimit = isProduction || enableRateLimitInDev;
 
 // ─── Security middleware ──────────────────────────────────────────────────────
 
 app.use(helmet());
-app.use(cors({
-  origin: process.env.FRONTEND_URL || "http://localhost:3000",
-  credentials: true,
-}));
+app.use(
+  cors({
+    origin: process.env.FRONTEND_URL || "http://localhost:3000",
+    credentials: true,
+  }),
+);
 
-// Global rate limit: 100 req / 15 min per IP
-app.use(rateLimit({
-  windowMs: 15 * 60 * 1000,
-  max:      100,
-  message:  { error: "Too many requests, please try again later" },
-}));
+// Global + auth rate limits are enabled in production.
+// In development they are off by default to avoid local lockouts.
+if (shouldApplyRateLimit) {
+  app.use(
+    rateLimit({
+      windowMs: 15 * 60 * 1000,
+      max: Number(process.env.RATE_LIMIT_MAX || 100),
+      message: { error: "Too many requests, please try again later" },
+    }),
+  );
+}
 
-// Stricter rate limit on auth endpoints
-const authLimiter = rateLimit({ windowMs: 15 * 60 * 1000, max: 20 });
+const authLimiter = shouldApplyRateLimit
+  ? rateLimit({
+      windowMs: 15 * 60 * 1000,
+      max: Number(process.env.AUTH_RATE_LIMIT_MAX || 20),
+      message: {
+        error:
+          "Too many login attempts. Please wait a few minutes and try again.",
+      },
+    })
+  : (req, res, next) => next();
 
 // ─── General middleware ───────────────────────────────────────────────────────
 
 app.use(morgan("dev"));
 app.use(express.json({ limit: "5mb" }));
 app.use(express.urlencoded({ extended: true }));
+app.use("/uploads", express.static(path.join(__dirname, "uploads")));
 
 // ─── Health check ─────────────────────────────────────────────────────────────
 
-app.get("/health", (_, res) => res.json({ status: "ok", timestamp: new Date() }));
+app.get("/health", (_, res) =>
+  res.json({ status: "ok", timestamp: new Date() }),
+);
 
 // ─── Routes ───────────────────────────────────────────────────────────────────
 
-app.use("/auth",     authLimiter, authRoutes);
+app.use("/auth", authLimiter, authRoutes);
 app.use("/activity", activityRoutes);
-app.use("/verify",   verificationRoutes);
-app.use("/score",    scoreRoutes);
-app.use("/loan",     loanRoutes);
-app.use("/admin",    adminRoutes);
+app.use("/verify", verificationRoutes);
+app.use("/score", scoreRoutes);
+app.use("/loan", loanRoutes);
 
 // ─── 404 handler ─────────────────────────────────────────────────────────────
 
@@ -64,16 +87,31 @@ app.use((req, res) => res.status(404).json({ error: "Route not found" }));
 app.use((err, req, res, next) => {
   console.error(err.stack);
   res.status(err.status || 500).json({
-    error: process.env.NODE_ENV === "production" ? "Internal server error" : err.message,
+    error:
+      process.env.NODE_ENV === "production"
+        ? "Internal server error"
+        : err.message,
   });
 });
 
 // ─── Start ────────────────────────────────────────────────────────────────────
 
-app.listen(PORT, () => {
-  console.log(`\n🚀 ImpactScore API running on port ${PORT}`);
-  console.log(`   ENV: ${process.env.NODE_ENV || "development"}`);
-  console.log(`   DB:  ${process.env.DATABASE_URL ? "connected" : "⚠ DATABASE_URL not set"}`);
-});
+async function startServer() {
+  try {
+    await connectDB();
+    app.listen(PORT, () => {
+      console.log(`\n🚀 ImpactScore API running on port ${PORT}`);
+      console.log(`   ENV: ${process.env.NODE_ENV || "development"}`);
+      console.log(
+        `   DB:  ${process.env.MONGODB_URI ? "connected" : "⚠ MONGODB_URI not set"}`,
+      );
+    });
+  } catch (err) {
+    console.error("Failed to start server:", err.message);
+    process.exit(1);
+  }
+}
+
+startServer();
 
 module.exports = app;

@@ -3,27 +3,44 @@ import React from "react";
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { ToastContainer } from "react-toastify";
 import "react-toastify/dist/ReactToastify.css";
-import LenderDashboard  from "./pages/LenderDashboard";
+import LenderDashboard from "./pages/LenderDashboard";
 
 import { AuthProvider, useAuth } from "./context/AuthContext";
-import Navbar          from "./components/Navbar";
-import Landing         from "./pages/Landing";
-import Login           from "./pages/Login";
-import Signup          from "./pages/Signup";
-import Dashboard       from "./pages/Dashboard";
-import SubmitActivity  from "./pages/SubmitActivity";
-import VerifierPanel   from "./pages/VerifierPanel";
+import Navbar from "./components/Navbar";
+import Landing from "./pages/Landing";
+import Login from "./pages/Login";
+import Signup from "./pages/Signup";
+import Dashboard from "./pages/Dashboard";
+import SubmitActivity from "./pages/SubmitActivity";
+import VerifierPanel from "./pages/VerifierPanel";
 import LoanApplication from "./pages/LoanApplication";
-import AdminPanel      from "./pages/AdminPanel";
+import ActivityHistory from "./pages/ActivityHistory";
 
 // ── Guards ────────────────────────────────────────────────────────────────────
 
 function PrivateRoute({ children, roles }) {
   const { user, loading } = useAuth();
-  if (loading) return <div className="flex items-center justify-center h-screen text-gray-500">Loading…</div>;
-  if (!user)   return <Navigate to="/login" replace />;
-  if (roles && !roles.includes(user.role)) return <Navigate to="/dashboard" replace />;
+  if (loading)
+    return (
+      <div className="flex items-center justify-center h-screen text-gray-500">
+        Loading…
+      </div>
+    );
+  if (!user) return <Navigate to="/login" replace />;
+  if (roles && !roles.includes(user.role))
+    return <Navigate to="/dashboard" replace />;
   return children;
+}
+
+function RoleDashboard() {
+  const { user } = useAuth();
+  if (!user) return <Navigate to="/login" replace />;
+
+  if (user.role === "borrower") return <Dashboard />;
+  if (user.role === "verifier") return <Navigate to="/verify" replace />;
+  if (user.role === "lender") return <Navigate to="/lender" replace />;
+
+  return <Navigate to="/" replace />;
 }
 
 // ── App ───────────────────────────────────────────────────────────────────────
@@ -35,33 +52,63 @@ export default function App() {
         <Navbar />
         <main className="min-h-screen bg-gray-50">
           <Routes>
-            <Route path="/"        element={<Landing />} />
-            <Route path="/login"   element={<Login />} />
-            <Route path="/signup"  element={<Signup />} />
+            <Route path="/" element={<Landing />} />
+            <Route path="/login" element={<Login />} />
+            <Route path="/signup" element={<Signup />} />
 
-            <Route path="/dashboard" element={
-              <PrivateRoute><Dashboard /></PrivateRoute>
-            }/>
+            <Route
+              path="/dashboard"
+              element={
+                <PrivateRoute>
+                  <RoleDashboard />
+                </PrivateRoute>
+              }
+            />
 
-            <Route path="/submit-activity" element={
-              <PrivateRoute roles={["borrower"]}><SubmitActivity /></PrivateRoute>
-            }/>
+            <Route
+              path="/activities"
+              element={
+                <PrivateRoute roles={["borrower"]}>
+                  <ActivityHistory />
+                </PrivateRoute>
+              }
+            />
 
-            <Route path="/verify" element={
-              <PrivateRoute roles={["verifier", "admin"]}><VerifierPanel /></PrivateRoute>
-            }/>
+            <Route
+              path="/submit-activity"
+              element={
+                <PrivateRoute roles={["borrower"]}>
+                  <SubmitActivity />
+                </PrivateRoute>
+              }
+            />
 
-            <Route path="/loan" element={
-              <PrivateRoute roles={["borrower"]}><LoanApplication /></PrivateRoute>
-            }/>
+            <Route
+              path="/verify"
+              element={
+                <PrivateRoute roles={["verifier"]}>
+                  <VerifierPanel />
+                </PrivateRoute>
+              }
+            />
 
-            <Route path="/lender" element={
-              <PrivateRoute roles={["lender","admin"]}><LenderDashboard /></PrivateRoute>
-            }/>
+            <Route
+              path="/loan"
+              element={
+                <PrivateRoute roles={["borrower"]}>
+                  <LoanApplication />
+                </PrivateRoute>
+              }
+            />
 
-            <Route path="/admin" element={
-              <PrivateRoute roles={["admin"]}><AdminPanel /></PrivateRoute>
-            }/>
+            <Route
+              path="/lender"
+              element={
+                <PrivateRoute roles={["lender"]}>
+                  <LenderDashboard />
+                </PrivateRoute>
+              }
+            />
 
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>
