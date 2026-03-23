@@ -1,6 +1,8 @@
 # 🌟 ImpactScore — Blockchain-Enabled Micro-Finance Ecosystem
 
-A decentralized micro-finance platform that enables underserved users (e.g. street vendors) to access loans using a dynamic **Impact Score** instead of traditional credit history.
+**A fully decentralized micro-finance platform built on blockchain principles** enabling underserved users (street vendors, gig workers, informal economy) to access loans through a **tamper-proof Impact Score** instead of centralized credit history.
+
+**Blockchain-first architecture:** Every activity verification, score update, and loan decision is recorded immutably on-chain (Polygon Mumbai), creating an auditable, transparent, and manipulation-resistant lending ecosystem.
 
 ---
 
@@ -32,18 +34,42 @@ impactscore/
 
 ---
 
-## 🏗️ How It Works
+## 🏗️ How It Works — Blockchain-Powered Trust
 
-**Workflow**: Borrower submits activity → Verifier approves & writes to blockchain → Score recalculated → Lender sees tier & approves/rejects loan
+**Workflow**: Borrower submits activity → Verifier approves → **Activity hash stored immutably on-chain** → Score updated via smart contract → Lender reviews on-chain history → Loan decision executes automatically
 
-**Key Components**:
-- **Backend (Node.js)**: Express API with JWT auth, PostgreSQL database, ethers.js blockchain integration, Pinata IPFS
-- **Smart Contracts (Solidity)**: ActivityRegistry (stores activity hashes), ImpactScore (maintains scores), LoanManager (tier-based decisions)
-- **Frontend (React)**: Role-based dashboard, MetaMask wallet binding, Chart.js visualizations
+**Key Blockchain Principles**:
+- **Immutability**: Every verified activity is recorded as a permanent hash on-chain (ActivityRegistry contract) — no retroactive modification.
+- **Transparency**: All verifications and score updates are publicly auditable on the Polygon blockchain.
+- **Smart Contract Enforcement**: Scoring rules, tier calculations, and access controls are encoded in contracts — enforced by the network, not bypassed by individuals.
+- **Decentralized Verification**: Verifier credentials and permissions are managed on-chain; any approved verifier can record activities globally.
+- **Permanent Audit Trail**: Complete record of borrower activity history, verification decisions, and lending offers — immutable and cryptographically verified.
+
+**Architecture**:
+- **ActivityRegistry (on-chain)**: Stores normalized hashes of verified activities, preventing duplicates and creating an auditable ledger.
+- **ImpactScore (on-chain)**: Maintains borrower scores as a transparent, rule-based state machine; score updates only via allowed verifier calls.
+- **LoanManager (on-chain)**: Calculates loan tiers and interest rates deterministically from on-chain scores — no hidden logic, no manipulation.
+- **PostgreSQL Off-chain**: Stores activity metadata and user profiles (privacy); on-chain stores only hashes for audit + transparency.
 
 ---
 
-## ⚡ Quick Start
+## 🔐 Blockchain-First Features
+
+✅ **Immutable Activity Ledger** — Every verified activity recorded on Polygon as a permanent hash; no retroactive modifications.
+
+✅ **Smart Contract Enforcement** — Scoring rules and tier calculations encoded in contracts; executed by the network, not individuals. **No hidden logic, no manipulation.**
+
+✅ **Decentralized Verification** — Verifiers registered on-chain; any approved verifier globally can approve activities. Censorship-resistant and transparent.
+
+✅ **Transparent Audit Trail** — Complete queryable history of all activities, verifications, scores, and lending decisions. Public on blockchain.
+
+✅ **Trustless Lending** — Users don't trust a company or bank; they trust math encoded in smart contracts. Verified by network consensus.
+
+✅ **On-Chain Governance Ready** — Architecture supports future DAO governance: community votes on categories, thresholds, and verifier onboarding.
+
+**→ Read our [BLOCKCHAIN.md](BLOCKCHAIN.md) for deep dive into architecture, smart contract design, and why blockchain matters here.**
+
+---
 
 ### Prerequisites
 

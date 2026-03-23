@@ -15,6 +15,7 @@ import {
   Search,
   ShieldCheck,
   Download,
+  Sparkles,
 } from "lucide-react";
 
 const TIER_COLORS = {
@@ -41,6 +42,8 @@ export default function LenderDashboard() {
   const [profile, setProfile] = useState({});
   const [deciding, setDeciding] = useState(null);
   const [form, setForm] = useState({});
+  const [aiInsights, setAiInsights] = useState({});
+  const [aiLoading, setAiLoading] = useState({});
   const [loanFilters, setLoanFilters] = useState({
     q: "",
     minScore: "",
@@ -121,6 +124,18 @@ export default function LenderDashboard() {
       load();
     } catch (err) {
       toast.error(err.response?.data?.error || "Failed");
+    }
+  };
+
+  const getAiInsight = async (loanId) => {
+    setAiLoading((prev) => ({ ...prev, [loanId]: true }));
+    try {
+      const { data } = await api.get(`/loan/${loanId}/insight`);
+      setAiInsights((prev) => ({ ...prev, [loanId]: data.insight }));
+    } catch (err) {
+      toast.error(err.response?.data?.error || "Failed to fetch AI insight");
+    } finally {
+      setAiLoading((prev) => ({ ...prev, [loanId]: false }));
     }
   };
 
@@ -344,6 +359,8 @@ export default function LenderDashboard() {
             const p = profile[loan.user_id];
             const isOpen = expanded === loan.id;
             const f = form[loan.id] || {};
+            const insight = aiInsights[loan.id];
+            const insightLoading = aiLoading[loan.id];
 
             return (
               <div key={loan.id} className="bg-white border border-slate-100 rounded-2xl shadow-sm overflow-hidden">
@@ -468,7 +485,54 @@ export default function LenderDashboard() {
 
                     {loan.status === "pending" && (
                       <div className="bg-white rounded-xl border border-slate-100 p-4">
-                        <p className="text-sm font-semibold text-slate-700 mb-3">Your Decision</p>
+                        <div className="flex items-center justify-between gap-2 mb-3">
+                          <p className="text-sm font-semibold text-slate-700">Your Decision</p>
+                          <button
+                            onClick={() => getAiInsight(loan.id)}
+                            disabled={insightLoading}
+                            className="inline-flex items-center gap-1.5 text-xs border border-indigo-200 text-indigo-700 px-3 py-1.5 rounded-lg hover:bg-indigo-50 disabled:opacity-50"
+                          >
+                            <Sparkles size={13} /> {insightLoading ? "Analyzing..." : "AI Insight"}
+                          </button>
+                        </div>
+
+                        {insight && (
+                          <div className="mb-4 rounded-lg border border-indigo-100 bg-indigo-50/70 p-3 text-xs text-slate-700">
+                            <div className="flex items-center gap-2 flex-wrap mb-2">
+                              <span className="font-semibold text-slate-800">Recommendation:</span>
+                              <span className={`px-2 py-0.5 rounded-full font-medium capitalize ${insight.recommendedAction === "approve" ? "bg-green-100 text-green-700" : insight.recommendedAction === "reject" ? "bg-red-100 text-red-700" : "bg-amber-100 text-amber-700"}`}>
+                                {insight.recommendedAction}
+                              </span>
+                              <span className="text-slate-500">Confidence {insight.confidence}%</span>
+                              <span className="text-slate-400">{insight.provider} • {insight.model}</span>
+                            </div>
+                            <div className="space-y-1 mb-2">
+                              {(insight.reasoning || []).map((r, idx) => (
+                                <p key={idx} className="text-slate-600">• {r}</p>
+                              ))}
+                            </div>
+                            {insight.termsSuggestion && (
+                              <div className="grid sm:grid-cols-3 gap-2 text-[11px]">
+                                <div className="bg-white border border-indigo-100 rounded px-2 py-1">
+                                  <p className="text-slate-500">Suggested max amount</p>
+                                  <p className="font-semibold text-slate-700">{formatINR(insight.termsSuggestion.maxApprovedAmount || 0)}</p>
+                                </div>
+                                <div className="bg-white border border-indigo-100 rounded px-2 py-1">
+                                  <p className="text-slate-500">Rate range</p>
+                                  <p className="font-semibold text-slate-700">{insight.termsSuggestion.interestRateRange}</p>
+                                </div>
+                                <div className="bg-white border border-indigo-100 rounded px-2 py-1">
+                                  <p className="text-slate-500">Tenure note</p>
+                                  <p className="font-semibold text-slate-700">{insight.termsSuggestion.durationNote}</p>
+                                </div>
+                              </div>
+                            )}
+                            {insight.fallback && insight.sourceNote && (
+                              <p className="text-[11px] text-slate-500 mt-2">{insight.sourceNote}</p>
+                            )}
+                          </div>
+                        )}
+
                         <div className="grid sm:grid-cols-3 gap-3 mb-3">
                           <div>
                             <label className="text-xs text-slate-500 block mb-1">

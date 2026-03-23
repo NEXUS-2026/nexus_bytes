@@ -14,13 +14,13 @@ async function seed() {
 
   // ── Users ──────────────────────────────────────────────────────────────────
   const users = await pool.query(`
-    INSERT INTO users (email, password_hash, full_name, phone, role, wallet_address, kyc_status, access_status)
+    INSERT INTO users (email, password_hash, full_name, phone, role, wallet_address, kyc_status, access_status, email_verified)
     VALUES
-      ('borrower@demo.com',  $1, 'Ravi Kumar',      '+91-9876543210', 'borrower',  '0xBorrower0000000000000000000000000000000001', 'approved', 'approved'),
-      ('borrower2@demo.com', $1, 'Meena Patel',     '+91-9123456789', 'borrower',  '0xBorrower0000000000000000000000000000000002', 'approved', 'approved'),
-      ('verifier@demo.com',  $1, 'NGO Verifier',    '+91-9000000001', 'verifier',  '0xVerifier000000000000000000000000000000001', 'approved', 'approved'),
-      ('lender@demo.com',    $1, 'Bank Lender',     '+91-9000000002', 'lender',    '0xLender00000000000000000000000000000000001', 'approved', 'approved'),
-      ('admin@demo.com',     $1, 'Platform Admin',  '+91-9000000003', 'admin',     '0xAdmin000000000000000000000000000000000001', 'approved', 'approved')
+      ('borrower@demo.com',  $1, 'Ravi Kumar',      '+91-9876543210', 'borrower',  '0x1234567890123456789012345678901234567890', 'approved', 'approved', TRUE),
+      ('borrower2@demo.com', $1, 'Meena Patel',     '+91-9123456789', 'borrower',  '0x1234567890123456789012345678901234567891', 'approved', 'approved', TRUE),
+      ('verifier@demo.com',  $1, 'NGO Verifier',    '+91-9000000001', 'verifier',  '0x1234567890123456789012345678901234567892', 'approved', 'approved', TRUE),
+      ('lender@demo.com',    $1, 'Bank Lender',     '+91-9000000002', 'lender',    '0x1234567890123456789012345678901234567893', 'approved', 'approved', TRUE),
+      ('admin@demo.com',     $1, 'Platform Admin',  '+91-9000000003', 'admin',     '0x1234567890123456789012345678901234567894', 'approved', 'approved', TRUE)
     ON CONFLICT (email) DO UPDATE SET
       password_hash = EXCLUDED.password_hash,
       full_name = EXCLUDED.full_name,

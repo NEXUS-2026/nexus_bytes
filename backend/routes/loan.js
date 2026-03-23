@@ -4,6 +4,7 @@ const { body, validationResult } = require("express-validator");
 const db       = require("../config/db");
 const { authenticate, requireRole } = require("../middleware/auth");
 const scoreEngine = require("../services/scoreEngine");
+const geminiService = require("../services/gemini");
 
 const router = express.Router();
 
@@ -134,7 +135,7 @@ router.post(
 
       const { rows } = await db.query(
         `INSERT INTO loans (user_id, amount, interest_rate, duration_days, status, tier, score_at_apply, purpose, due_date)
-         VALUES ($1, $2, $3, $4, 'pending', $5, $6, $7, NOW() + ($4 * INTERVAL '1 day')) RETURNING *`,
+         VALUES ($1, $2, $3, $4, 'pending', $5, $6, $7, NOW() + (($4)::int * INTERVAL '1 day')) RETURNING *`,
         [req.user.id, amount, terms.interestRate, duration_days, terms.tier, score, purpose || null]
       );
 
@@ -239,11 +240,11 @@ router.get("/borrowers", authenticate, requireRole(["lender", "admin"]), async (
 
     if (q) {
       params.push(`%${String(q).trim()}%`);
-      where.push(`(u.full_name ILIKE $${params.length} OR u.email ILIKE $${params.length})`);
+      where.push(`(b.full_name ILIKE $${params.length} OR b.email ILIKE $${params.length})`);
     }
     if (kyc && ["pending", "approved", "rejected"].includes(String(kyc).toLowerCase())) {
       params.push(String(kyc).toLowerCase());
-      where.push(`u.kyc_status = $${params.length}`);
+      where.push(`b.kyc_status = $${params.length}`);
     }
     if (minScore !== undefined) {
       const parsed = Number(minScore);
@@ -262,11 +263,11 @@ router.get("/borrowers", authenticate, requireRole(["lender", "admin"]), async (
 
     const sortable = {
       score: "COALESCE(s.score, 0)",
-      loans: "la.loan_count",
-      repaid: "la.repaid_loans",
-      pending: "la.pending_loans",
+      loans: "COALESCE(la.loan_count, 0)",
+      repaid: "COALESCE(la.repaid_loans, 0)",
+      pending: "COALESCE(la.pending_loans, 0)",
       last_applied_at: "la.last_applied_at",
-      name: "u.full_name",
+      name: "b.full_name",
     };
     const sortField = sortable[String(sortBy).toLowerCase()] || sortable.last_applied_at;
     const sortDirection = String(sortOrder).toLowerCase() === "asc" ? "ASC" : "DESC";
@@ -282,7 +283,12 @@ router.get("/borrowers", authenticate, requireRole(["lender", "admin"]), async (
     const whereClause = where.length ? `WHERE ${where.join(" AND ")}` : "";
 
     const query = `
-      WITH loan_agg AS (
+      WITH borrower_base AS (
+        SELECT id, full_name, email, phone, wallet_address, kyc_status, created_at
+        FROM users
+        WHERE role = 'borrower'
+      ),
+      loan_agg AS (
         SELECT
           l.user_id,
           COUNT(*) AS loan_count,
@@ -303,44 +309,45 @@ router.get("/borrowers", authenticate, requireRole(["lender", "admin"]), async (
         GROUP BY a.user_id
       )
       SELECT
-        u.id,
-        u.full_name,
-        u.email,
-        u.phone,
-        u.wallet_address,
-        u.kyc_status,
-        u.created_at,
+        b.id,
+        b.full_name,
+        b.email,
+        b.phone,
+        b.wallet_address,
+        b.kyc_status,
+        b.created_at,
         COALESCE(s.score, 0) AS current_score,
-        la.loan_count,
-        la.pending_loans,
-        la.approved_loans,
-        la.repaid_loans,
+        COALESCE(la.loan_count, 0) AS loan_count,
+        COALESCE(la.pending_loans, 0) AS pending_loans,
+        COALESCE(la.approved_loans, 0) AS approved_loans,
+        COALESCE(la.repaid_loans, 0) AS repaid_loans,
         la.last_applied_at,
         COALESCE(aa.verified_activities, 0) AS verified_activities,
         COALESCE(aa.pending_activities, 0) AS pending_activities,
         COALESCE(aa.rejected_activities, 0) AS rejected_activities,
         COALESCE(aa.total_activities, 0) AS total_activities,
         CASE
-          WHEN la.loan_count = 0 THEN NULL
-          ELSE ROUND((la.repaid_loans::numeric / la.loan_count::numeric) * 100, 0)
+          WHEN COALESCE(la.loan_count, 0) = 0 THEN NULL
+          ELSE ROUND((COALESCE(la.repaid_loans, 0)::numeric / la.loan_count::numeric) * 100, 0)
         END AS repayment_rate
-      FROM loan_agg la
-      JOIN users u ON u.id = la.user_id
-      LEFT JOIN impact_scores s ON s.user_id = u.id
-      LEFT JOIN activity_agg aa ON aa.user_id = u.id
+      FROM borrower_base b
+      LEFT JOIN loan_agg la ON b.id = la.user_id
+      LEFT JOIN impact_scores s ON s.user_id = b.id
+      LEFT JOIN activity_agg aa ON aa.user_id = b.id
       ${whereClause}
-      ORDER BY ${sortField} ${sortDirection}
+      ORDER BY ${sortField} ${sortDirection} NULLS LAST
       LIMIT $${limitIndex} OFFSET $${offsetIndex}
     `;
 
     const countQuery = `
-      WITH loan_users AS (
-        SELECT DISTINCT user_id FROM loans
+      WITH borrower_base AS (
+        SELECT id, full_name, email, kyc_status
+        FROM users
+        WHERE role = 'borrower'
       )
       SELECT COUNT(*)::int AS total
-      FROM users u
-      JOIN loan_users lu ON lu.user_id = u.id
-      LEFT JOIN impact_scores s ON s.user_id = u.id
+      FROM borrower_base b
+      LEFT JOIN impact_scores s ON s.user_id = b.id
       ${whereClause}
     `;
 
@@ -376,6 +383,104 @@ router.get("/borrowers", authenticate, requireRole(["lender", "admin"]), async (
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: "Failed to fetch borrower directory" });
+  }
+});
+
+// ─── GET /loan/:id/insight — AI recommendation for lender decision ─────────
+
+router.get("/:id/insight", authenticate, requireRole(["lender", "admin"]), async (req, res) => {
+  try {
+    const { rows: loanRows } = await db.query(
+      `SELECT l.*, u.full_name, u.email, u.kyc_status, u.wallet_address, COALESCE(s.score, 0) AS current_score
+       FROM loans l
+       JOIN users u ON u.id = l.user_id
+       LEFT JOIN impact_scores s ON s.user_id = l.user_id
+       WHERE l.id = $1`,
+      [req.params.id]
+    );
+
+    if (!loanRows.length) return res.status(404).json({ error: "Loan not found" });
+    const loan = loanRows[0];
+
+    const [activitiesRes, loansRes] = await Promise.all([
+      db.query(
+        `SELECT status, category, created_at
+         FROM activities
+         WHERE user_id = $1
+         ORDER BY created_at DESC`,
+        [loan.user_id]
+      ),
+      db.query(
+        `SELECT amount, approved_amount, status, duration_days, applied_at, decided_at, repaid_at
+         FROM loans
+         WHERE user_id = $1
+         ORDER BY applied_at DESC`,
+        [loan.user_id]
+      ),
+    ]);
+
+    const activities = activitiesRes.rows;
+    const borrowerLoans = loansRes.rows;
+    const repaidLoans = borrowerLoans.filter((l) => l.status === "repaid").length;
+    const pendingLoans = borrowerLoans.filter((l) => l.status === "pending").length;
+    const repaymentRate = borrowerLoans.length > 0
+      ? Math.round((repaidLoans / borrowerLoans.length) * 100)
+      : null;
+
+    const rejectedActivities = activities.filter((a) => a.status === "rejected").length;
+    const risk = computeBorrowerRisk({
+      currentScore: Number(loan.current_score || 0),
+      repaymentRate,
+      loanCount: borrowerLoans.length,
+      pendingLoans,
+      rejectedActivities,
+      totalActivities: activities.length,
+      kycStatus: loan.kyc_status,
+    });
+
+    const verifiedActivities = activities.filter((a) => a.status === "verified").length;
+    const rejectedLoans = borrowerLoans.filter((l) => l.status === "rejected").length;
+
+    const insight = await geminiService.generateLoanDecisionInsight({
+      loan: {
+        id: loan.id,
+        amount: Number(loan.amount || 0),
+        duration_days: Number(loan.duration_days || 0),
+        requested_interest_rate: Number(loan.interest_rate || 0),
+        tier: loan.tier,
+        applied_at: loan.applied_at,
+        purpose: loan.purpose || "",
+      },
+      borrower: {
+        id: loan.user_id,
+        full_name: loan.full_name,
+        email: loan.email,
+        kyc_status: loan.kyc_status,
+        current_score: Number(loan.current_score || 0),
+        repayment_rate: repaymentRate,
+        total_loans: borrowerLoans.length,
+        repaid_loans: repaidLoans,
+        pending_loans: pendingLoans,
+        rejected_loans: rejectedLoans,
+        total_activities: activities.length,
+        verified_activities: verifiedActivities,
+        rejected_activities: rejectedActivities,
+      },
+      risk: {
+        risk_score: risk.score,
+        risk_level: risk.level,
+        risk_factors: risk.factors,
+      },
+    });
+
+    res.json({
+      loanId: loan.id,
+      borrowerId: loan.user_id,
+      insight,
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Failed to generate AI insight" });
   }
 });
 
