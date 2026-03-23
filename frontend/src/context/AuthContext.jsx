@@ -1,20 +1,30 @@
 // src/context/AuthContext.jsx
-import React, { createContext, useContext, useState, useEffect, useCallback } from "react";
+import React, {
+  createContext,
+  useContext,
+  useState,
+  useEffect,
+  useCallback,
+} from "react";
 import api from "../utils/api";
 import { toast } from "react-toastify";
 
 const AuthContext = createContext(null);
 
 export function AuthProvider({ children }) {
-  const [user,    setUser]    = useState(null);
+  const [user, setUser] = useState(null);
   const [loading, setLoading] = useState(true);
-  const [wallet,  setWallet]  = useState(null);
+  const [wallet, setWallet] = useState(null);
 
   // ── Restore session ───────────────────────────────────────────────────────
   useEffect(() => {
     const token = localStorage.getItem("token");
-    if (!token) { setLoading(false); return; }
-    api.get("/auth/me")
+    if (!token) {
+      setLoading(false);
+      return;
+    }
+    api
+      .get("/auth/me")
       .then(({ data }) => setUser(data))
       .catch(() => localStorage.removeItem("token"))
       .finally(() => setLoading(false));
@@ -48,8 +58,10 @@ export function AuthProvider({ children }) {
       return;
     }
     try {
-      const accounts = await window.ethereum.request({ method: "eth_requestAccounts" });
-      const address  = accounts[0];
+      const accounts = await window.ethereum.request({
+        method: "eth_requestAccounts",
+      });
+      const address = accounts[0];
       setWallet(address);
 
       // Persist to backend if logged in
@@ -67,15 +79,32 @@ export function AuthProvider({ children }) {
   // Listen for account changes
   useEffect(() => {
     if (!window.ethereum) return;
+
+    const syncWallet = async () => {
+      try {
+        const accounts = await window.ethereum.request({
+          method: "eth_accounts",
+        });
+        setWallet(accounts[0] || null);
+      } catch {
+        setWallet(null);
+      }
+    };
+
+    syncWallet();
+
     const handleChange = (accounts) => {
       setWallet(accounts[0] || null);
     };
     window.ethereum.on("accountsChanged", handleChange);
-    return () => window.ethereum.removeListener("accountsChanged", handleChange);
+    return () =>
+      window.ethereum.removeListener("accountsChanged", handleChange);
   }, []);
 
   return (
-    <AuthContext.Provider value={{ user, loading, wallet, signup, login, logout, connectWallet }}>
+    <AuthContext.Provider
+      value={{ user, loading, wallet, signup, login, logout, connectWallet }}
+    >
       {children}
     </AuthContext.Provider>
   );

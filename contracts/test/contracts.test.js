@@ -1,11 +1,12 @@
-const { expect }         = require("chai");
-const { ethers }         = require("hardhat");
-const { loadFixture }    = require("@nomicfoundation/hardhat-network-helpers");
+const { expect } = require("chai");
+const { ethers } = require("hardhat");
+const { loadFixture } = require("@nomicfoundation/hardhat-network-helpers");
 
 // ─── Fixture ────────────────────────────────────────────────────────────────
 
 async function deployFixture() {
-  const [owner, verifier, borrower, lender, stranger] = await ethers.getSigners();
+  const [owner, verifier, borrower, lender, stranger] =
+    await ethers.getSigners();
 
   const ActivityRegistry = await ethers.getContractFactory("ActivityRegistry");
   const registry = await ActivityRegistry.deploy();
@@ -21,7 +22,16 @@ async function deployFixture() {
   await registry.addVerifier(verifier.address);
   await loanManager.addLender(lender.address);
 
-  return { registry, impactScore, loanManager, owner, verifier, borrower, lender, stranger };
+  return {
+    registry,
+    impactScore,
+    loanManager,
+    owner,
+    verifier,
+    borrower,
+    lender,
+    stranger,
+  };
 }
 
 // ─── ActivityRegistry ────────────────────────────────────────────────────────
@@ -33,11 +43,15 @@ describe("ActivityRegistry", () => {
   });
 
   it("stores an activity and emits event", async () => {
-    const { registry, impactScore, verifier, borrower } = await loadFixture(deployFixture);
+    const { registry, impactScore, verifier, borrower } = await loadFixture(
+      deployFixture,
+    );
     const hash = ethers.keccak256(ethers.toUtf8Bytes("activity-data-1"));
 
     await expect(
-      registry.connect(verifier).storeActivity(borrower.address, hash, "health")
+      registry
+        .connect(verifier)
+        .storeActivity(borrower.address, hash, "health"),
     )
       .to.emit(registry, "ActivityStored")
       .withArgs(1, borrower.address, hash, "health", verifier.address);
@@ -46,9 +60,13 @@ describe("ActivityRegistry", () => {
   it("rejects duplicate hash", async () => {
     const { registry, verifier, borrower } = await loadFixture(deployFixture);
     const hash = ethers.keccak256(ethers.toUtf8Bytes("dup"));
-    await registry.connect(verifier).storeActivity(borrower.address, hash, "health");
+    await registry
+      .connect(verifier)
+      .storeActivity(borrower.address, hash, "health");
     await expect(
-      registry.connect(verifier).storeActivity(borrower.address, hash, "health")
+      registry
+        .connect(verifier)
+        .storeActivity(borrower.address, hash, "health"),
     ).to.be.revertedWith("ActivityRegistry: duplicate hash");
   });
 
@@ -56,7 +74,9 @@ describe("ActivityRegistry", () => {
     const { registry, stranger, borrower } = await loadFixture(deployFixture);
     const hash = ethers.keccak256(ethers.toUtf8Bytes("x"));
     await expect(
-      registry.connect(stranger).storeActivity(borrower.address, hash, "health")
+      registry
+        .connect(stranger)
+        .storeActivity(borrower.address, hash, "health"),
     ).to.be.revertedWith("ActivityRegistry: not a verifier");
   });
 });
@@ -84,9 +104,11 @@ describe("ImpactScore", () => {
   });
 
   it("non-registry cannot updateScore", async () => {
-    const { impactScore, stranger, borrower } = await loadFixture(deployFixture);
+    const { impactScore, stranger, borrower } = await loadFixture(
+      deployFixture,
+    );
     await expect(
-      impactScore.connect(stranger).updateScore(borrower.address, "health")
+      impactScore.connect(stranger).updateScore(borrower.address, "health"),
     ).to.be.revertedWith("ImpactScore: caller not registry");
   });
 
@@ -95,7 +117,7 @@ describe("ImpactScore", () => {
     await impactScore.setScore(borrower.address, 1000);
     expect(await impactScore.getScore(borrower.address)).to.equal(1000);
     await expect(
-      impactScore.setScore(borrower.address, 1001)
+      impactScore.setScore(borrower.address, 1001),
     ).to.be.revertedWith("ImpactScore: exceeds max");
   });
 });
@@ -109,49 +131,60 @@ describe("LoanManager", () => {
     return f;
   }
 
-  it("auto-approves with LOW tier for score > 80", async () => {
+  it("auto-approves with LOW tier for score > 84", async () => {
     const { loanManager, borrower } = await withScore(90);
-    await expect(loanManager.connect(borrower).applyLoan(100_000, 30))
-      .to.emit(loanManager, "LoanApproved");
+    await expect(loanManager.connect(borrower).applyLoan(100_000, 30)).to.emit(
+      loanManager,
+      "LoanApproved",
+    );
 
     const loan = await loanManager.getLoan(1);
     expect(loan.status).to.equal(1); // APPROVED
-    expect(loan.interestRate).to.equal(500);
+    expect(loan.interestRate).to.equal(900);
   });
 
-  it("auto-approves with MEDIUM tier for score 51–80", async () => {
-    const { loanManager, borrower } = await withScore(65);
+  it("auto-approves with MEDIUM tier for score 70–84", async () => {
+    const { loanManager, borrower } = await withScore(75);
     await loanManager.connect(borrower).applyLoan(100_000, 30);
     const loan = await loanManager.getLoan(1);
     expect(loan.interestRate).to.equal(1200);
   });
 
-  it("auto-approves with HIGH tier for score 20–50", async () => {
-    const { loanManager, borrower } = await withScore(35);
+  it("auto-approves with HIGH tier for score 40–69", async () => {
+    const { loanManager, borrower } = await withScore(55);
     await loanManager.connect(borrower).applyLoan(40_000, 30);
     const loan = await loanManager.getLoan(1);
-    expect(loan.interestRate).to.equal(2000);
+    expect(loan.interestRate).to.equal(1600);
   });
 
-  it("auto-rejects for score < 20", async () => {
+  it("auto-rejects for score < 40", async () => {
     const { loanManager, borrower } = await withScore(10);
-    await expect(loanManager.connect(borrower).applyLoan(10_000, 30))
-      .to.emit(loanManager, "LoanRejected");
+    await expect(loanManager.connect(borrower).applyLoan(10_000, 30)).to.emit(
+      loanManager,
+      "LoanRejected",
+    );
     const loan = await loanManager.getLoan(1);
     expect(loan.status).to.equal(2); // REJECTED
   });
 
   it("caps approved amount at tier max", async () => {
-    const { loanManager, borrower } = await withScore(65);
+    const { loanManager, borrower } = await withScore(75);
     await loanManager.connect(borrower).applyLoan(999_999, 30);
     const loan = await loanManager.getLoan(1);
-    expect(loan.approvedAmount).to.equal(200_000); // MEDIUM cap
+    expect(loan.approvedAmount).to.equal(999_999); // Under MEDIUM cap (3,000,000)
+  });
+
+  it("caps approved amount at LOW tier max", async () => {
+    const { loanManager, borrower } = await withScore(90);
+    await loanManager.connect(borrower).applyLoan(9_999_999, 30);
+    const loan = await loanManager.getLoan(1);
+    expect(loan.approvedAmount).to.equal(5_000_000); // LOW cap
   });
 
   it("rejects invalid duration", async () => {
     const { loanManager, borrower } = await withScore(90);
     await expect(
-      loanManager.connect(borrower).applyLoan(10_000, 400)
+      loanManager.connect(borrower).applyLoan(10_000, 400),
     ).to.be.revertedWith("LoanManager: invalid duration");
   });
 });

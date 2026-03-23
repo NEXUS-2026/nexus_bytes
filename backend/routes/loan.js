@@ -7,7 +7,14 @@ const Activity = require("../models/Activity");
 const ImpactScore = require("../models/ImpactScore");
 const { authenticate, requireRole } = require("../middleware/auth");
 const scoreEngine = require("../services/scoreEngine");
-const { POLICY_LIMITS, getTermsForScore } = require("../services/loanPolicy");
+const {
+  LOAN_POLICY_VERSION,
+  MIN_SCORE_FOR_LOAN,
+  POLICY_LIMITS,
+  RECENCY_WINDOW_DAYS,
+  applyLoanPolicyFactors,
+  getTermsForScore,
+} = require("../services/loanPolicy");
 
 const router = express.Router();
 
@@ -48,20 +55,27 @@ router.post(
       const score = scoreData.score;
 
       const borrower = await User.findById(req.user.id)
-        .select("kyc_status")
+        .select("kyc_status wallet_address")
         .lean();
+
+      if (!borrower?.wallet_address) {
+        return res.status(403).json({
+          error: "Connect your wallet before applying for a loan.",
+        });
+      }
+
       if (borrower?.kyc_status !== "approved") {
         return res.status(403).json({
           error: "KYC approval is required before applying for a loan.",
         });
       }
 
-      if (score < 20) {
+      if (score < MIN_SCORE_FOR_LOAN) {
         return res.status(400).json({
           error:
             "Your Impact Score is too low. Submit and verify more activities first.",
           score,
-          minimumRequired: 20,
+          minimumRequired: MIN_SCORE_FOR_LOAN,
         });
       }
 
@@ -80,12 +94,50 @@ router.post(
         });
       }
 
-      const terms = getTermsForScore(score);
+      const historicalLoans = await Loan.find({
+        user_id: req.user.id,
+        status: { $in: ["approved", "repaid", "repayment_requested"] },
+      })
+        .select("status")
+        .lean();
+      const repaidCount = historicalLoans.filter(
+        (l) => l.status === "repaid",
+      ).length;
+      const repaymentRate =
+        historicalLoans.length > 0
+          ? Number(((repaidCount / historicalLoans.length) * 100).toFixed(2))
+          : null;
+
+      const latestVerifiedActivity = await Activity.findOne({
+        user_id: req.user.id,
+        status: "verified",
+      })
+        .select("verified_at created_at")
+        .sort({ verified_at: -1, created_at: -1 })
+        .lean();
+      const referenceDate = latestVerifiedActivity
+        ? new Date(
+            latestVerifiedActivity.verified_at ||
+              latestVerifiedActivity.created_at,
+          )
+        : null;
+      const recencyWindowMs = RECENCY_WINDOW_DAYS * 24 * 60 * 60 * 1000;
+      const hasStaleActivity = referenceDate
+        ? Date.now() - referenceDate.getTime() > recencyWindowMs
+        : true;
+
+      const baselineTerms = getTermsForScore(score);
+      const { terms, appliedFactors } = applyLoanPolicyFactors(baselineTerms, {
+        repaymentRate,
+        hasStaleActivity,
+      });
+
       if (amount > terms.maxAmount) {
         return res.status(400).json({
-          error: `Your score tier allows a maximum of Rs ${terms.maxAmount}.`,
+          error: `Your current profile allows a maximum of Rs ${terms.maxAmount}.`,
           maxAmount: terms.maxAmount,
-          tier: terms.tier,
+          tier: baselineTerms.tier,
+          appliedFactors,
         });
       }
 
@@ -95,14 +147,30 @@ router.post(
         interest_rate: terms.interestRate,
         duration_days,
         status: "pending",
-        tier: terms.tier,
+        tier: baselineTerms.tier,
         score_at_apply: score,
         purpose: purpose || null,
+        policy_version: LOAN_POLICY_VERSION,
+        effective_max_amount: terms.maxAmount,
+        effective_interest_rate: terms.interestRate,
+        repayment_rate_at_apply: repaymentRate,
+        kyc_status_at_apply: borrower.kyc_status,
+        recent_activity_at_apply: referenceDate,
+        factor_adjustments: appliedFactors,
+        eligibility_reason:
+          appliedFactors.length > 0
+            ? `Adjusted by: ${appliedFactors.join(", ")}`
+            : "Baseline score tier terms applied",
       });
 
       res.status(201).json({
         loan: serializeLoan(loan),
-        terms,
+        terms: {
+          ...terms,
+          tier: baselineTerms.tier,
+          appliedFactors,
+          policyVersion: LOAN_POLICY_VERSION,
+        },
         message: "Application submitted. A lender will review it shortly.",
       });
     } catch (err) {
@@ -315,10 +383,16 @@ router.post(
 
       const baselineTerms = getTermsForScore(loan.score_at_apply);
       const baselineAmount = Number(
-        baselineTerms.maxAmount || loan.amount || 0,
+        loan.effective_max_amount ||
+          baselineTerms.maxAmount ||
+          loan.amount ||
+          0,
       );
       const baselineRate = Number(
-        baselineTerms.interestRate || loan.interest_rate || 0,
+        loan.effective_interest_rate ||
+          baselineTerms.interestRate ||
+          loan.interest_rate ||
+          0,
       );
 
       const finalAmount = Number(approved_amount || loan.amount);

@@ -28,9 +28,18 @@ export default function Navbar() {
           roles: ["borrower"],
         },
         { to: "/activities", label: "My Activities", roles: ["borrower"] },
+        { to: "/kyc/upload", label: "Upload KYC", roles: ["borrower"] },
         { to: "/loan", label: "Apply Loan", roles: ["borrower"] },
         { to: "/lender", label: "Loan Reviews", roles: ["lender"] },
+        { to: "/lender/portfolio", label: "Portfolio", roles: ["lender"] },
+        {
+          to: "/default/management",
+          label: "Defaults",
+          roles: ["lender"],
+        },
         { to: "/verify", label: "Verify", roles: ["verifier"] },
+        { to: "/verifier/portfolio", label: "Portfolio", roles: ["verifier"] },
+        { to: "/kyc/dashboard", label: "KYC Review", roles: ["verifier"] },
       ].filter((l) => l.roles.includes(user.role))
     : [];
 
@@ -122,6 +131,21 @@ export default function Navbar() {
       {/* Mobile drawer */}
       {open && (
         <div className="md:hidden bg-white border-t border-gray-100 px-4 pb-4 flex flex-col gap-3">
+          {user?.role === "borrower" && (
+            <button
+              onClick={connectWallet}
+              className={`text-sm px-3 py-2 rounded-lg border text-left ${
+                wallet
+                  ? "bg-green-50 border-green-300 text-green-700"
+                  : "border-gray-300 text-gray-600"
+              }`}
+            >
+              {wallet
+                ? wallet.slice(0, 6) + "..." + wallet.slice(-4)
+                : "Connect Wallet"}
+            </button>
+          )}
+
           {navLinks.map((l) => (
             <Link
               key={l.to}

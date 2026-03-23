@@ -430,6 +430,11 @@ export default function LenderDashboard() {
                       >
                         {loan.status.replace("_", " ")}
                       </span>
+                      {loan.policy_version && (
+                        <span className="text-xs px-2 py-0.5 rounded-full font-medium bg-indigo-50 text-indigo-700">
+                          {loan.policy_version}
+                        </span>
+                      )}
                     </div>
                     <div className="text-sm text-gray-500 mt-0.5 flex flex-wrap gap-3">
                       <span>{formatINR(loan.amount)} requested</span>
@@ -593,6 +598,40 @@ export default function LenderDashboard() {
                           </div>
                         </div>
 
+                        {(loan.factor_adjustments?.length > 0 ||
+                          loan.eligibility_reason ||
+                          loan.effective_max_amount ||
+                          loan.effective_interest_rate) && (
+                          <div className="bg-white rounded-xl border border-indigo-100 p-4">
+                            <p className="text-xs font-semibold text-indigo-700 uppercase tracking-wide mb-2">
+                              Underwriting Factors
+                            </p>
+                            <div className="text-sm text-gray-700 space-y-1">
+                              {loan.effective_max_amount && (
+                                <p>
+                                  Effective max amount:{" "}
+                                  {formatINR(loan.effective_max_amount)}
+                                </p>
+                              )}
+                              {loan.effective_interest_rate && (
+                                <p>
+                                  Effective baseline rate:{" "}
+                                  {loan.effective_interest_rate}%
+                                </p>
+                              )}
+                              {loan.factor_adjustments?.length > 0 && (
+                                <p>
+                                  Applied factors:{" "}
+                                  {loan.factor_adjustments.join(", ")}
+                                </p>
+                              )}
+                              {loan.eligibility_reason && (
+                                <p>{loan.eligibility_reason}</p>
+                              )}
+                            </div>
+                          </div>
+                        )}
+
                         {loan.status === "pending" && (
                           <div className="bg-white rounded-xl border border-gray-100 p-4">
                             <p className="text-sm font-semibold text-gray-700 mb-3">
@@ -600,8 +639,13 @@ export default function LenderDashboard() {
                             </p>
                             <div className="mb-3 rounded-lg border border-indigo-100 bg-indigo-50 p-3 text-xs text-indigo-700">
                               Standard terms for this application:{" "}
-                              {formatINR(loan.amount)} at {loan.interest_rate}%
-                              . Add a reason if you override either value.
+                              {formatINR(
+                                loan.effective_max_amount || loan.amount,
+                              )}{" "}
+                              at{" "}
+                              {loan.effective_interest_rate ||
+                                loan.interest_rate}
+                              %. Add a reason if you override either value.
                             </div>
                             <div className="grid sm:grid-cols-3 gap-3 mb-3">
                               <div>

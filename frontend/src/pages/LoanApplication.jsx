@@ -2,6 +2,7 @@
 import React, { useEffect, useState } from "react";
 import { toast } from "react-toastify";
 import api from "../utils/api";
+import { useAuth } from "../context/AuthContext";
 import {
   Coins,
   AlertCircle,
@@ -28,8 +29,19 @@ const STATUS_ICONS = {
   repayment_requested: <Clock size={14} />,
 };
 
+function formatScore(value) {
+  const num = Number(value || 0);
+  if (Number.isNaN(num)) return "0";
+  return new Intl.NumberFormat("en-IN", {
+    minimumFractionDigits: 0,
+    maximumFractionDigits: 2,
+  }).format(num);
+}
+
 export default function LoanApplication() {
+  const { wallet } = useAuth();
   const [scoreData, setScoreData] = useState(null);
+  const [kycStatus, setKycStatus] = useState(null);
   const [loans, setLoans] = useState([]);
   const [form, setForm] = useState({
     amount: "",
@@ -43,11 +55,13 @@ export default function LoanApplication() {
 
   const load = async () => {
     try {
-      const [s, l] = await Promise.all([
+      const [s, k, l] = await Promise.all([
         api.get("/score"),
+        api.get("/kyc/status"),
         api.get("/loan/status"),
       ]);
       setScoreData(s.data);
+      setKycStatus(k.data || null);
       setLoans(l.data);
     } catch {
       toast.error("Failed to load data");
@@ -108,11 +122,15 @@ export default function LoanApplication() {
   if (loading)
     return <div className="text-center py-20 text-gray-400">Loading…</div>;
 
-  const score = scoreData?.score ?? 0;
+  const score = Number((scoreData?.score ?? 0).toFixed(2));
+  const scoreDisplay = formatScore(score);
   const eligible = scoreData?.loanEligible;
+  const walletConnected = Boolean(wallet);
+  const kycApproved = kycStatus?.approved === true;
   const maxAmt = scoreData?.maxLoanAmount ?? 0;
   const rate = scoreData?.interestRate ?? 0;
   const tier = scoreData?.tier ?? "none";
+  const tierLabel = tier === "none" ? "Not Eligible" : `${tier} Tier`;
 
   const activeLoan = loans.find((l) =>
     ["pending", "approved", "repayment_requested"].includes(l.status),
@@ -142,7 +160,8 @@ export default function LoanApplication() {
         )}
         <div className="flex-1">
           <div className="font-semibold text-gray-900">
-            Impact Score: <span className="text-2xl font-bold">{score}</span>
+            Impact Score:{" "}
+            <span className="text-2xl font-bold">{scoreDisplay}</span>
             <span
               className={`ml-2 text-xs px-2 py-0.5 rounded-full capitalize
               ${
@@ -155,7 +174,7 @@ export default function LoanApplication() {
                       : "bg-gray-100 text-gray-500"
               }`}
             >
-              {tier} tier
+              {tierLabel}
             </span>
           </div>
           {eligible ? (
@@ -163,10 +182,22 @@ export default function LoanApplication() {
               You qualify for up to <strong>{formatINR(maxAmt)}</strong> at{" "}
               <strong>{rate}% interest</strong>. Loans are reviewed and approved
               by a lender.
+              {!walletConnected && (
+                <span className="text-amber-700 font-medium">
+                  {" "}
+                  Connect your wallet to submit an application.
+                </span>
+              )}
+              {walletConnected && !kycApproved && (
+                <span className="text-amber-700 font-medium">
+                  {" "}
+                  Complete KYC approval before applying.
+                </span>
+              )}
             </p>
           ) : (
             <p className="text-sm text-gray-500 mt-1">
-              Score below 20. Submit and verify more activities to qualify.
+              Score below 40. Submit and verify more activities to qualify.
             </p>
           )}
         </div>
@@ -226,128 +257,152 @@ export default function LoanApplication() {
       )}
 
       {/* Application form */}
-      {eligible && !activeLoan && !submitted && (
-        <div className="bg-white border border-gray-100 rounded-2xl shadow-sm p-6 mb-6">
-          <h2 className="font-semibold text-gray-800 mb-4 flex items-center gap-2">
-            <Coins size={18} className="text-indigo-500" /> Apply for a Loan
-          </h2>
+      {eligible && !walletConnected && !activeLoan && !submitted && (
+        <div className="rounded-2xl border border-amber-200 bg-amber-50 p-4 mb-6 text-sm text-amber-800">
+          Wallet is not connected. Use the Connect Wallet button in the top bar,
+          then return here to apply.
+        </div>
+      )}
 
-          <form onSubmit={handleApply} className="space-y-4">
-            <div className="grid sm:grid-cols-2 gap-4">
+      {eligible &&
+        walletConnected &&
+        !kycApproved &&
+        !activeLoan &&
+        !submitted && (
+          <div className="rounded-2xl border border-amber-200 bg-amber-50 p-4 mb-6 text-sm text-amber-800">
+            KYC is not approved yet. Upload your documents from the KYC page and
+            wait for verifier approval before applying.
+          </div>
+        )}
+
+      {eligible &&
+        walletConnected &&
+        kycApproved &&
+        !activeLoan &&
+        !submitted && (
+          <div className="bg-white border border-gray-100 rounded-2xl shadow-sm p-6 mb-6">
+            <h2 className="font-semibold text-gray-800 mb-4 flex items-center gap-2">
+              <Coins size={18} className="text-indigo-500" /> Apply for a Loan
+            </h2>
+
+            <form onSubmit={handleApply} className="space-y-4">
+              <div className="grid sm:grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                    Loan Amount (INR){" "}
+                    <span className="text-gray-400 text-xs">
+                      max {formatINR(maxAmt)}
+                    </span>
+                  </label>
+                  <input
+                    type="number"
+                    min="1"
+                    max={maxAmt}
+                    step="1"
+                    value={form.amount}
+                    onChange={(e) =>
+                      setForm((f) => ({ ...f, amount: e.target.value }))
+                    }
+                    placeholder={`Up to ${formatINR(maxAmt)}`}
+                    className="w-full px-4 py-2.5 border border-gray-300 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-indigo-400"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                    Repayment Period
+                  </label>
+                  <select
+                    value={form.duration_days}
+                    onChange={(e) =>
+                      setForm((f) => ({ ...f, duration_days: e.target.value }))
+                    }
+                    className="w-full px-4 py-2.5 border border-gray-300 rounded-xl text-sm bg-white focus:outline-none focus:ring-2 focus:ring-indigo-400"
+                  >
+                    {[7, 14, 30, 60, 90, 180, 365].map((d) => (
+                      <option key={d} value={d}>
+                        {d} days ({Math.ceil(d / 30)} month{d > 30 ? "s" : ""})
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">
-                  Loan Amount (INR){" "}
+                  Purpose{" "}
                   <span className="text-gray-400 text-xs">
-                    max {formatINR(maxAmt)}
+                    (optional — helps lender approve faster)
                   </span>
                 </label>
                 <input
-                  type="number"
-                  min="1"
-                  max={maxAmt}
-                  step="1"
-                  value={form.amount}
+                  type="text"
+                  value={form.purpose}
                   onChange={(e) =>
-                    setForm((f) => ({ ...f, amount: e.target.value }))
+                    setForm((f) => ({ ...f, purpose: e.target.value }))
                   }
-                  placeholder={`Up to ${formatINR(maxAmt)}`}
+                  placeholder="e.g. Stock for my vegetable stall, School fees, Medical expenses…"
                   className="w-full px-4 py-2.5 border border-gray-300 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-indigo-400"
                 />
               </div>
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">
-                  Repayment Period
-                </label>
-                <select
-                  value={form.duration_days}
-                  onChange={(e) =>
-                    setForm((f) => ({ ...f, duration_days: e.target.value }))
-                  }
-                  className="w-full px-4 py-2.5 border border-gray-300 rounded-xl text-sm bg-white focus:outline-none focus:ring-2 focus:ring-indigo-400"
-                >
-                  {[7, 14, 30, 60, 90, 180, 365].map((d) => (
-                    <option key={d} value={d}>
-                      {d} days ({Math.ceil(d / 30)} month{d > 30 ? "s" : ""})
-                    </option>
-                  ))}
-                </select>
-              </div>
-            </div>
 
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">
-                Purpose{" "}
-                <span className="text-gray-400 text-xs">
-                  (optional — helps lender approve faster)
-                </span>
-              </label>
-              <input
-                type="text"
-                value={form.purpose}
-                onChange={(e) =>
-                  setForm((f) => ({ ...f, purpose: e.target.value }))
-                }
-                placeholder="e.g. Stock for my vegetable stall, School fees, Medical expenses…"
-                className="w-full px-4 py-2.5 border border-gray-300 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-indigo-400"
-              />
-            </div>
-
-            {/* EMI Calculator */}
-            {form.amount > 0 && (
-              <div className="bg-indigo-50 rounded-xl p-4 border border-indigo-100">
-                <div className="flex items-center gap-2 mb-3 text-sm font-medium text-indigo-700">
-                  <Calculator size={15} /> EMI Preview
+              {/* EMI Calculator */}
+              {form.amount > 0 && (
+                <div className="bg-indigo-50 rounded-xl p-4 border border-indigo-100">
+                  <div className="flex items-center gap-2 mb-3 text-sm font-medium text-indigo-700">
+                    <Calculator size={15} /> EMI Preview
+                  </div>
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-center text-sm">
+                    <div className="bg-white rounded-lg p-3">
+                      <div className="font-bold text-gray-900">
+                        {formatINR(form.amount)}
+                      </div>
+                      <div className="text-xs text-gray-400 mt-0.5">
+                        Principal
+                      </div>
+                    </div>
+                    <div className="bg-white rounded-lg p-3">
+                      <div className="font-bold text-gray-900">{rate}%</div>
+                      <div className="text-xs text-gray-400 mt-0.5">
+                        Annual Rate
+                      </div>
+                    </div>
+                    <div className="bg-white rounded-lg p-3">
+                      <div className="font-bold text-indigo-600">
+                        {formatINRWithPaise(emi)}/mo
+                      </div>
+                      <div className="text-xs text-gray-400 mt-0.5">
+                        Monthly EMI
+                      </div>
+                    </div>
+                    <div className="bg-white rounded-lg p-3">
+                      <div className="font-bold text-gray-900">
+                        {formatINRWithPaise(totalPayback)}
+                      </div>
+                      <div className="text-xs text-gray-400 mt-0.5">
+                        Total Payback
+                      </div>
+                    </div>
+                  </div>
+                  <p className="text-xs text-indigo-500 mt-2">
+                    * Final terms may be adjusted by the lender at time of
+                    approval.
+                  </p>
                 </div>
-                <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-center text-sm">
-                  <div className="bg-white rounded-lg p-3">
-                    <div className="font-bold text-gray-900">
-                      {formatINR(form.amount)}
-                    </div>
-                    <div className="text-xs text-gray-400 mt-0.5">
-                      Principal
-                    </div>
-                  </div>
-                  <div className="bg-white rounded-lg p-3">
-                    <div className="font-bold text-gray-900">{rate}%</div>
-                    <div className="text-xs text-gray-400 mt-0.5">
-                      Annual Rate
-                    </div>
-                  </div>
-                  <div className="bg-white rounded-lg p-3">
-                    <div className="font-bold text-indigo-600">
-                      {formatINRWithPaise(emi)}/mo
-                    </div>
-                    <div className="text-xs text-gray-400 mt-0.5">
-                      Monthly EMI
-                    </div>
-                  </div>
-                  <div className="bg-white rounded-lg p-3">
-                    <div className="font-bold text-gray-900">
-                      {formatINRWithPaise(totalPayback)}
-                    </div>
-                    <div className="text-xs text-gray-400 mt-0.5">
-                      Total Payback
-                    </div>
-                  </div>
-                </div>
-                <p className="text-xs text-indigo-500 mt-2">
-                  * Final terms may be adjusted by the lender at time of
-                  approval.
-                </p>
-              </div>
-            )}
+              )}
 
-            <button
-              type="submit"
-              disabled={applying}
-              className="w-full bg-indigo-600 text-white py-3 rounded-xl font-semibold hover:bg-indigo-700 disabled:opacity-50 transition flex items-center justify-center gap-2"
-            >
-              <Coins size={18} />
-              {applying ? "Submitting application…" : "Submit Loan Application"}
-            </button>
-          </form>
-        </div>
-      )}
+              <button
+                type="submit"
+                disabled={applying}
+                className="w-full bg-indigo-600 text-white py-3 rounded-xl font-semibold hover:bg-indigo-700 disabled:opacity-50 transition flex items-center justify-center gap-2"
+              >
+                <Coins size={18} />
+                {applying
+                  ? "Submitting application…"
+                  : "Submit Loan Application"}
+              </button>
+            </form>
+          </div>
+        )}
 
       {/* Submitted confirmation */}
       {submitted && (

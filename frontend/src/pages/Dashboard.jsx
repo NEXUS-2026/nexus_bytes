@@ -14,6 +14,7 @@ import {
 import { useAuth } from "../context/AuthContext";
 import api from "../utils/api";
 import { formatINR } from "../utils/currency";
+import ScoreExplainModal from "../components/ScoreExplainModal";
 import {
   Activity,
   AlertCircle,
@@ -24,6 +25,7 @@ import {
   ListChecks,
   PlusCircle,
   Wallet,
+  HelpCircle,
 } from "lucide-react";
 
 ChartJS.register(
@@ -49,15 +51,36 @@ const TIER_COLOR = {
   none: "text-gray-500",
 };
 
+function formatScore(value) {
+  const num = Number(value || 0);
+  if (Number.isNaN(num)) return "0";
+  return new Intl.NumberFormat("en-IN", {
+    minimumFractionDigits: 0,
+    maximumFractionDigits: 2,
+  }).format(num);
+}
+
 function getNextMilestone(score) {
-  if (score < 20) {
-    return { label: "Loan eligibility", target: 20, remaining: 20 - score };
+  if (score < 40) {
+    return {
+      label: "Loan eligibility",
+      target: 40,
+      remaining: Number((40 - score).toFixed(2)),
+    };
   }
-  if (score <= 50) {
-    return { label: "Medium tier", target: 51, remaining: 51 - score };
+  if (score <= 69) {
+    return {
+      label: "Medium tier",
+      target: 70,
+      remaining: Number((70 - score).toFixed(2)),
+    };
   }
-  if (score <= 80) {
-    return { label: "Low interest tier", target: 81, remaining: 81 - score };
+  if (score <= 84) {
+    return {
+      label: "Low interest tier",
+      target: 85,
+      remaining: Number((85 - score).toFixed(2)),
+    };
   }
   return { label: "Top tier unlocked", target: score, remaining: 0 };
 }
@@ -68,24 +91,28 @@ function progressToTarget(score, target) {
 }
 
 export default function Dashboard() {
-  const { user } = useAuth();
+  const { user, wallet } = useAuth();
   const [scoreData, setScoreData] = useState(null);
+  const [kycStatus, setKycStatus] = useState(null);
   const [activities, setActivities] = useState([]);
   const [loans, setLoans] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [showScoreExplain, setShowScoreExplain] = useState(false);
 
   useEffect(() => {
     const load = async () => {
       try {
-        const [s, a, l] = await Promise.all([
+        const [s, a, k, l] = await Promise.all([
           api.get("/score"),
           api.get("/activity"),
+          api.get("/kyc/status"),
           user.role === "borrower"
             ? api.get("/loan/status")
             : Promise.resolve({ data: [] }),
         ]);
         setScoreData(s.data);
         setActivities(a.data || []);
+        setKycStatus(k.data || null);
         setLoans(l.data || []);
       } catch (err) {
         console.error(err);
@@ -132,9 +159,10 @@ export default function Dashboard() {
     const milestoneProgress = progressToTarget(score, milestone.target);
 
     const checklist = {
-      walletConnected: Boolean(user.wallet_address),
+      walletConnected: Boolean(wallet),
+      kycApproved: kycStatus?.approved === true,
       atLeastOneVerified: verifiedCount > 0,
-      scoreEligible: score >= 20,
+      scoreEligible: score >= 40,
     };
 
     const events = [
@@ -158,6 +186,7 @@ export default function Dashboard() {
 
     return {
       score,
+      scoreDisplay: formatScore(score),
       tier,
       breakdown,
       verifiedCount,
@@ -171,7 +200,7 @@ export default function Dashboard() {
       checklist,
       events,
     };
-  }, [activities, loans, scoreData, user.wallet_address]);
+  }, [activities, loans, scoreData, wallet, kycStatus]);
 
   if (loading) {
     return (
@@ -261,7 +290,7 @@ export default function Dashboard() {
         <StatCard
           icon={<Award size={20} />}
           label="Impact Score"
-          value={computed.score}
+          value={computed.scoreDisplay}
           color="indigo"
         />
         <StatCard
@@ -292,13 +321,22 @@ export default function Dashboard() {
 
       <div className="grid md:grid-cols-3 gap-4 mb-6">
         <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-5">
-          <h3 className="text-sm font-semibold text-gray-800 mb-3">
-            Eligibility Journey
-          </h3>
+          <div className="flex items-center justify-between mb-3">
+            <h3 className="text-sm font-semibold text-gray-800">
+              Eligibility Journey
+            </h3>
+            <button
+              onClick={() => setShowScoreExplain(true)}
+              className="p-1.5 hover:bg-gray-100 rounded-lg transition"
+              title="How is your score calculated?"
+            >
+              <HelpCircle size={16} className="text-indigo-600" />
+            </button>
+          </div>
           <p
             className={`text-3xl font-bold ${TIER_COLOR[computed.tier] || "text-gray-700"}`}
           >
-            {computed.score}
+            {computed.scoreDisplay}
           </p>
           <p className="text-xs text-gray-500 mt-1 capitalize">
             Current tier:{" "}
@@ -310,7 +348,7 @@ export default function Dashboard() {
               <p className="text-xs text-gray-500 mt-3">
                 Need{" "}
                 <span className="font-semibold text-indigo-600">
-                  {computed.milestone.remaining}
+                  {formatScore(computed.milestone.remaining)}
                 </span>{" "}
                 more points for {computed.milestone.label}.
               </p>
@@ -337,12 +375,16 @@ export default function Dashboard() {
             text="Wallet connected"
           />
           <ChecklistItem
+            ok={computed.checklist.kycApproved}
+            text="KYC approved"
+          />
+          <ChecklistItem
             ok={computed.checklist.atLeastOneVerified}
             text="At least one verified activity"
           />
           <ChecklistItem
             ok={computed.checklist.scoreEligible}
-            text="Impact score is loan-eligible (20+)"
+            text="Impact score is loan-eligible (40+)"
           />
           <Link
             to="/loan"
@@ -387,7 +429,7 @@ export default function Dashboard() {
           <div
             className={`text-6xl font-bold ${TIER_COLOR[computed.tier] || "text-gray-700"}`}
           >
-            {computed.score}
+            {computed.scoreDisplay}
           </div>
           <div className="text-gray-500 text-sm">Impact Score</div>
           <span
@@ -533,6 +575,12 @@ export default function Dashboard() {
           </div>
         </div>
       )}
+
+      <ScoreExplainModal
+        userId={user.id}
+        isOpen={showScoreExplain}
+        onClose={() => setShowScoreExplain(false)}
+      />
     </div>
   );
 }

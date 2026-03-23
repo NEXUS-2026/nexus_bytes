@@ -1,5 +1,22 @@
 const mongoose = require("mongoose");
 
+// Trajectory entry for historical score tracking
+const trajectoryEntrySchema = new mongoose.Schema(
+  {
+    score: { type: Number, required: true },
+    components: {
+      base_points: { type: Number, default: 0 },
+      recency_points: { type: Number, default: 0 },
+      consistency_bonus: { type: Number, default: 0 },
+      recent_verified_count: { type: Number, default: 0 },
+      total_before_cap: { type: Number, default: 0 },
+      capped_score: { type: Number, default: 0 },
+    },
+    synced_at: { type: Date, default: Date.now },
+  },
+  { _id: false },
+);
+
 const impactScoreSchema = new mongoose.Schema(
   {
     user_id: {
@@ -26,6 +43,11 @@ const impactScoreSchema = new mongoose.Schema(
       default: "ok",
     },
     last_sync_error: { type: String, default: null },
+    // Trajectory: keep last 90 days of score snapshots for trending
+    trajectory: {
+      type: [trajectoryEntrySchema],
+      default: [],
+    },
   },
   { timestamps: false },
 );

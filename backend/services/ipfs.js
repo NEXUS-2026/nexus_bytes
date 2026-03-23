@@ -122,4 +122,4 @@ function gatewayUrl(cid) {
   return `${base.replace(/\/$/, "")}/${cid}`;
 }
 
-module.exports = { uploadBuffer, gatewayUrl };
+module.exports = { uploadBuffer, gatewayUrl, hasPinataCredentials };

@@ -11,7 +11,13 @@ const authRoutes = require("./routes/auth");
 const activityRoutes = require("./routes/activity");
 const verificationRoutes = require("./routes/verification");
 const scoreRoutes = require("./routes/score");
+const scoreExplainRoutes = require("./routes/scoreExplain");
 const loanRoutes = require("./routes/loan");
+const verifierAnalyticsRoutes = require("./routes/verifierAnalytics");
+const lenderAnalyticsRoutes = require("./routes/lenderAnalytics");
+const kycRoutes = require("./routes/kyc");
+const fraudRoutes = require("./routes/fraud");
+const defaultRoutes = require("./routes/default");
 const { connectDB } = require("./config/db");
 
 const app = express();
@@ -75,8 +81,14 @@ app.get("/health", (_, res) =>
 app.use("/auth", authLimiter, authRoutes);
 app.use("/activity", activityRoutes);
 app.use("/verify", verificationRoutes);
+app.use("/verifier", verifierAnalyticsRoutes);
 app.use("/score", scoreRoutes);
+app.use("/score", scoreExplainRoutes);
 app.use("/loan", loanRoutes);
+app.use("/lender", lenderAnalyticsRoutes);
+app.use("/kyc", kycRoutes);
+app.use("/fraud", fraudRoutes);
+app.use("/default", defaultRoutes);
 
 // ─── 404 handler ─────────────────────────────────────────────────────────────
 

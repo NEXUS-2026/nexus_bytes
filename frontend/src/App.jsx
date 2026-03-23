@@ -4,6 +4,11 @@ import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { ToastContainer } from "react-toastify";
 import "react-toastify/dist/ReactToastify.css";
 import LenderDashboard from "./pages/LenderDashboard";
+import VerifierPortfolio from "./pages/VerifierPortfolio";
+import LenderPortfolio from "./pages/LenderPortfolio";
+import KYCDashboard from "./pages/KYCDashboard";
+import DefaultManagement from "./pages/DefaultManagement";
+import KYCUpload from "./pages/KYCUpload";
 
 import { AuthProvider, useAuth } from "./context/AuthContext";
 import Navbar from "./components/Navbar";
@@ -93,6 +98,15 @@ export default function App() {
             />
 
             <Route
+              path="/verifier/portfolio"
+              element={
+                <PrivateRoute roles={["verifier"]}>
+                  <VerifierPortfolio />
+                </PrivateRoute>
+              }
+            />
+
+            <Route
               path="/loan"
               element={
                 <PrivateRoute roles={["borrower"]}>
@@ -106,6 +120,42 @@ export default function App() {
               element={
                 <PrivateRoute roles={["lender"]}>
                   <LenderDashboard />
+                </PrivateRoute>
+              }
+            />
+
+            <Route
+              path="/lender/portfolio"
+              element={
+                <PrivateRoute roles={["lender"]}>
+                  <LenderPortfolio />
+                </PrivateRoute>
+              }
+            />
+
+            <Route
+              path="/kyc/upload"
+              element={
+                <PrivateRoute roles={["borrower"]}>
+                  <KYCUpload />
+                </PrivateRoute>
+              }
+            />
+
+            <Route
+              path="/kyc/dashboard"
+              element={
+                <PrivateRoute roles={["verifier"]}>
+                  <KYCDashboard />
+                </PrivateRoute>
+              }
+            />
+
+            <Route
+              path="/default/management"
+              element={
+                <PrivateRoute roles={["lender"]}>
+                  <DefaultManagement />
                 </PrivateRoute>
               }
             />

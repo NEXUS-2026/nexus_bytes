@@ -39,31 +39,20 @@ router.post(
     let data_hash = null;
 
     try {
-      // Upload document to Pinata IPFS if configured; otherwise keep a local file URL.
+      // Upload document to Pinata IPFS.
       if (req.file) {
-        if (
-          process.env.PINATA_JWT ||
-          (process.env.PINATA_API_KEY && process.env.PINATA_API_SECRET)
-        ) {
-          ipfs_hash = await ipfsService.uploadBuffer(
-            req.file.buffer,
-            req.file.originalname,
-          );
-          document_url = ipfsService.gatewayUrl(ipfs_hash);
-        } else {
-          const uploadsDir = path.join(__dirname, "..", "uploads");
-          fs.mkdirSync(uploadsDir, { recursive: true });
-
-          const safeName = req.file.originalname.replace(
-            /[^a-zA-Z0-9_.-]/g,
-            "_",
-          );
-          const storedName = `${Date.now()}-${safeName}`;
-          const fullPath = path.join(uploadsDir, storedName);
-
-          fs.writeFileSync(fullPath, req.file.buffer);
-          document_url = `/uploads/${storedName}`;
+        if (!ipfsService.hasPinataCredentials()) {
+          return res.status(500).json({
+            error:
+              "Pinata is not configured. Set PINATA_JWT or PINATA_API_KEY/PINATA_API_SECRET.",
+          });
         }
+
+        ipfs_hash = await ipfsService.uploadBuffer(
+          req.file.buffer,
+          req.file.originalname,
+        );
+        document_url = ipfsService.gatewayUrl(ipfs_hash);
       }
 
       // Build deterministic data hash (used on-chain)
@@ -162,6 +151,86 @@ router.get("/:id", authenticate, async (req, res) => {
     user_name: user?.full_name || null,
     user_email: user?.email || null,
   });
+});
+
+// ─── GET /activity/:id/document — open/download supporting document ─────────
+
+router.get("/:id/document", authenticate, async (req, res) => {
+  try {
+    if (!mongoose.isValidObjectId(req.params.id)) {
+      return res.status(404).json({ error: "Activity not found" });
+    }
+
+    const activity = await Activity.findById(req.params.id).lean();
+    if (!activity) {
+      return res.status(404).json({ error: "Activity not found" });
+    }
+
+    const ownerId = activity.user_id?.toString();
+    const isVerifier = req.user.role === "verifier";
+    const isOwnerBorrower =
+      req.user.role === "borrower" && ownerId === req.user.id;
+
+    if (!isVerifier && !isOwnerBorrower) {
+      return res.status(403).json({ error: "Forbidden" });
+    }
+
+    const wantsDownload = String(req.query.download || "false") === "true";
+
+    // Local file path case: /uploads/<file>
+    if (
+      activity.document_url &&
+      activity.document_url.startsWith("/uploads/")
+    ) {
+      const fileName = path.basename(activity.document_url);
+      const filePath = path.join(__dirname, "..", "uploads", fileName);
+
+      if (!fs.existsSync(filePath)) {
+        return res
+          .status(404)
+          .json({ error: "Uploaded file not found on server" });
+      }
+
+      if (wantsDownload) {
+        return res.download(filePath, fileName);
+      }
+
+      return res.sendFile(filePath);
+    }
+
+    // Full URL case (Pinata gateway/custom storage)
+    if (activity.document_url && /^https?:\/\//i.test(activity.document_url)) {
+      const remote = await fetch(activity.document_url);
+      if (!remote.ok) {
+        return res
+          .status(502)
+          .json({ error: "Failed to fetch remote document" });
+      }
+
+      const contentType =
+        remote.headers.get("content-type") || "application/octet-stream";
+      const remoteBuffer = Buffer.from(await remote.arrayBuffer());
+      const fileName = `${activity.title || "activity-document"}.bin`;
+      const disposition = wantsDownload ? "attachment" : "inline";
+
+      res.setHeader("Content-Type", contentType);
+      res.setHeader(
+        "Content-Disposition",
+        `${disposition}; filename=\"${fileName}\"`,
+      );
+      return res.send(remoteBuffer);
+    }
+
+    // IPFS hash fallback
+    if (activity.ipfs_hash) {
+      return res.redirect(ipfsService.gatewayUrl(activity.ipfs_hash));
+    }
+
+    return res.status(404).json({ error: "No supporting document available" });
+  } catch (err) {
+    console.error("[Activity Document] Error:", err);
+    return res.status(500).json({ error: err.message });
+  }
 });
 
 module.exports = router;

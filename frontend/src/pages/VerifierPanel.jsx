@@ -35,6 +35,7 @@ export default function VerifierPanel() {
   const [allActivities, setAllActivities] = useState([]);
   const [loading, setLoading] = useState(true);
   const [processing, setProcessing] = useState(null);
+  const [docLoadingId, setDocLoadingId] = useState(null);
   const [rejectId, setRejectId] = useState(null);
   const [noteById, setNoteById] = useState({});
 
@@ -106,16 +107,100 @@ export default function VerifierPanel() {
     }
   };
 
-  const getDocumentLink = (activity) => {
-    if (activity.document_url) {
-      if (activity.document_url.startsWith("http"))
-        return activity.document_url;
-      const apiBase = process.env.REACT_APP_API_URL || "http://localhost:5000";
-      return `${apiBase}${activity.document_url}`;
+  const hasDocument = (activity) =>
+    Boolean(activity.document_url || activity.ipfs_hash);
+
+  const fileNameFromDisposition = (headerValue, fallbackName) => {
+    if (!headerValue) return fallbackName;
+    const match = /filename=\"?([^\";]+)\"?/i.exec(headerValue);
+    return match?.[1] || fallbackName;
+  };
+
+  const openBlobInNewTab = (blob) => {
+    const objectUrl = URL.createObjectURL(blob);
+    window.open(objectUrl, "_blank", "noopener,noreferrer");
+    setTimeout(() => URL.revokeObjectURL(objectUrl), 60_000);
+  };
+
+  const saveBlob = (blob, fileName) => {
+    const objectUrl = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = objectUrl;
+    link.download = fileName;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(objectUrl);
+  };
+
+  const viewDocument = async (activity) => {
+    if (activity.document_url && /^https?:\/\//i.test(activity.document_url)) {
+      window.open(activity.document_url, "_blank", "noopener,noreferrer");
+      return;
     }
-    if (activity.ipfs_hash)
-      return `https://gateway.pinata.cloud/ipfs/${activity.ipfs_hash}`;
-    return null;
+
+    if (!activity.document_url && activity.ipfs_hash) {
+      const gatewayBase =
+        process.env.REACT_APP_IPFS_GATEWAY_BASE ||
+        "https://gateway.pinata.cloud/ipfs";
+      const url = `${gatewayBase.replace(/\/$/, "")}/${activity.ipfs_hash}`;
+      window.open(url, "_blank", "noopener,noreferrer");
+      return;
+    }
+
+    setDocLoadingId(activity.id);
+    try {
+      const response = await api.get(`/activity/${activity.id}/document`, {
+        responseType: "blob",
+      });
+      openBlobInNewTab(response.data);
+    } catch (err) {
+      toast.error(err.response?.data?.error || "Unable to open document");
+    } finally {
+      setDocLoadingId(null);
+    }
+  };
+
+  const downloadDocument = async (activity) => {
+    if (activity.document_url && /^https?:\/\//i.test(activity.document_url)) {
+      const link = document.createElement("a");
+      link.href = activity.document_url;
+      link.target = "_blank";
+      link.rel = "noopener noreferrer";
+      link.click();
+      return;
+    }
+
+    if (!activity.document_url && activity.ipfs_hash) {
+      const gatewayBase =
+        process.env.REACT_APP_IPFS_GATEWAY_BASE ||
+        "https://gateway.pinata.cloud/ipfs";
+      const link = document.createElement("a");
+      link.href = `${gatewayBase.replace(/\/$/, "")}/${activity.ipfs_hash}`;
+      link.target = "_blank";
+      link.rel = "noopener noreferrer";
+      link.click();
+      return;
+    }
+
+    setDocLoadingId(activity.id);
+    try {
+      const response = await api.get(
+        `/activity/${activity.id}/document?download=true`,
+        {
+          responseType: "blob",
+        },
+      );
+      const filename = fileNameFromDisposition(
+        response.headers["content-disposition"],
+        `${activity.title || "activity-document"}.bin`,
+      );
+      saveBlob(response.data, filename);
+    } catch (err) {
+      toast.error(err.response?.data?.error || "Unable to download document");
+    } finally {
+      setDocLoadingId(null);
+    }
   };
 
   const stats = useMemo(() => {
@@ -164,7 +249,7 @@ export default function VerifierPanel() {
           (a.email || "").toLowerCase().includes(q);
 
         const matchesCategory = category === "all" || a.category === category;
-        const hasDoc = Boolean(getDocumentLink(a));
+        const hasDoc = hasDocument(a);
         const matchesDoc =
           docFilter === "all" ||
           (docFilter === "hasDoc" && hasDoc) ||
@@ -299,7 +384,7 @@ export default function VerifierPanel() {
             ) : (
               <div className="divide-y divide-gray-50">
                 {filteredPending.map((a) => {
-                  const documentLink = getDocumentLink(a);
+                  const documentAvailable = hasDocument(a);
                   const waitHours = hoursSince(a.created_at);
                   const note = noteById[a.id] || "";
 
@@ -351,9 +436,9 @@ export default function VerifierPanel() {
                               </span>
                             )}
                             <span
-                              className={`px-2 py-0.5 rounded-full ${documentLink ? "bg-green-50 text-green-600" : "bg-gray-100 text-gray-500"}`}
+                              className={`px-2 py-0.5 rounded-full ${documentAvailable ? "bg-green-50 text-green-600" : "bg-gray-100 text-gray-500"}`}
                             >
-                              {documentLink
+                              {documentAvailable
                                 ? "Document available"
                                 : "No document"}
                             </span>
@@ -361,15 +446,28 @@ export default function VerifierPanel() {
                         </div>
 
                         <div className="flex gap-2 shrink-0">
-                          {documentLink && (
-                            <a
-                              href={documentLink}
-                              target="_blank"
-                              rel="noreferrer"
-                              className="flex items-center gap-1 text-xs border border-gray-200 px-3 py-2 rounded-lg hover:border-indigo-400 transition"
-                            >
-                              <ExternalLink size={12} /> Document
-                            </a>
+                          {documentAvailable && (
+                            <>
+                              <button
+                                type="button"
+                                onClick={() => viewDocument(a)}
+                                disabled={docLoadingId === a.id}
+                                className="flex items-center gap-1 text-xs border border-gray-200 px-3 py-2 rounded-lg hover:border-indigo-400 transition"
+                              >
+                                <ExternalLink size={12} />
+                                {docLoadingId === a.id
+                                  ? "Opening..."
+                                  : "Document"}
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => downloadDocument(a)}
+                                disabled={docLoadingId === a.id}
+                                className="flex items-center gap-1 text-xs border border-blue-200 text-blue-700 px-3 py-2 rounded-lg hover:bg-blue-50 transition"
+                              >
+                                {docLoadingId === a.id ? "..." : "Download"}
+                              </button>
+                            </>
                           )}
 
                           {rejectId !== a.id && (

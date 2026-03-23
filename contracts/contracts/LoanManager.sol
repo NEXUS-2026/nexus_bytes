@@ -8,9 +8,10 @@ import "./ImpactScore.sol";
  * @notice Automated micro-loan decisions based on Impact Score.
  *
  * Interest tiers:
- *   score > 80  → LOW    (5%)
- *   score > 50  → MEDIUM (12%)
- *   score ≤ 50  → HIGH   (20%) or REJECT if score < 20
+ *   score > 84  → LOW    (9%)
+ *   score > 69  → MEDIUM (12%)
+ *   score ≥ 40  → HIGH   (16%)
+ *   score < 40  → REJECT
  *
  * Loan amounts are simulated in smallest units (e.g. USD cents or
  * a stable-coin with 2 decimals). No real funds are transferred in
@@ -38,17 +39,17 @@ contract LoanManager {
 
     // ─── Constants ───────────────────────────────────────────────────────────
 
-    uint256 public constant SCORE_LOW_THRESHOLD    = 80;
-    uint256 public constant SCORE_MEDIUM_THRESHOLD = 50;
-    uint256 public constant SCORE_MIN_THRESHOLD    = 20;  // below → auto-reject
+    uint256 public constant SCORE_LOW_THRESHOLD    = 84;
+    uint256 public constant SCORE_MEDIUM_THRESHOLD = 69;
+    uint256 public constant SCORE_MIN_THRESHOLD    = 40;  // below → auto-reject
 
-    uint256 public constant RATE_LOW    = 500;   // 5.00%
+    uint256 public constant RATE_LOW    = 900;   // 9.00%
     uint256 public constant RATE_MEDIUM = 1200;  // 12.00%
-    uint256 public constant RATE_HIGH   = 2000;  // 20.00%
+    uint256 public constant RATE_HIGH   = 1600;  // 16.00%
 
-    uint256 public constant MAX_LOAN_LOW    = 500_000;   // $5,000
-    uint256 public constant MAX_LOAN_MEDIUM = 200_000;   // $2,000
-    uint256 public constant MAX_LOAN_HIGH   = 50_000;    // $500
+    uint256 public constant MAX_LOAN_LOW    = 5_000_000;   // $50,000
+    uint256 public constant MAX_LOAN_MEDIUM = 3_000_000;   // $30,000
+    uint256 public constant MAX_LOAN_HIGH   = 1_500_000;   // $15,000
 
     // ─── State ───────────────────────────────────────────────────────────────
 

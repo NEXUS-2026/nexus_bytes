@@ -7,7 +7,11 @@ const Activity = require("../models/Activity");
 const ImpactScore = require("../models/ImpactScore");
 const User = require("../models/User");
 const blockchainService = require("./blockchain");
-const { SCORE_MODEL_VERSION, getTermsForScore } = require("./loanPolicy");
+const {
+  MIN_SCORE_FOR_LOAN,
+  SCORE_MODEL_VERSION,
+  getTermsForScore,
+} = require("./loanPolicy");
 
 // Category weights (must match ImpactScore.sol constants)
 const WEIGHTS = {
@@ -57,17 +61,42 @@ async function syncUserScore(userId) {
   }).length;
 
   const consistencyBonus = Math.min(30, recentVerifiedCount * 2);
-  const totalBeforeCap = recencyPoints + consistencyBonus;
-  let score = totalBeforeCap;
 
-  // Cap at 1000 (matches MAX_SCORE in contract)
-  score = Math.min(score, 1000);
+  const totalBeforeCap = recencyPoints + consistencyBonus;
+  const score = Number(Math.min(totalBeforeCap, 1000).toFixed(2));
+
+  // 2. Build trajectory entry for historical tracking
+  const trajectoryEntry = {
+    score,
+    components: {
+      base_points: Number(basePoints.toFixed(2)),
+      recency_points: Number(recencyPoints.toFixed(2)),
+      consistency_bonus: consistencyBonus,
+      recent_verified_count: recentVerifiedCount,
+      total_before_cap: Number(totalBeforeCap.toFixed(2)),
+      capped_score: Number(score.toFixed(2)),
+    },
+    synced_at: new Date(),
+  };
+
+  // Check existing score doc to preserve model version and manage trajectory
+  const existingScore = await ImpactScore.findOne({ user_id: objectUserId });
+  const lockedModelVersion =
+    existingScore?.score_model_version || SCORE_MODEL_VERSION;
+
+  // Keep last 90 days of trajectory entries
+  let trajectoryHistory = existingScore?.trajectory || [];
+  const ninetyDaysAgo = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000);
+  trajectoryHistory = trajectoryHistory.filter(
+    (entry) => new Date(entry.synced_at) > ninetyDaysAgo,
+  );
+  trajectoryHistory.push(trajectoryEntry);
 
   // 2. Update local cache
   const scoreUpdate = {
     score,
     last_synced_at: new Date(),
-    score_model_version: SCORE_MODEL_VERSION,
+    score_model_version: lockedModelVersion,
     components: {
       base_points: Number(basePoints.toFixed(2)),
       recency_points: Number(recencyPoints.toFixed(2)),
@@ -78,6 +107,7 @@ async function syncUserScore(userId) {
     },
     sync_status: "ok",
     last_sync_error: null,
+    trajectory: trajectoryHistory,
   };
 
   await ImpactScore.findOneAndUpdate({ user_id: objectUserId }, scoreUpdate, {
@@ -169,11 +199,11 @@ async function getUserScore(userId) {
     },
   ]);
 
-  const score = scoreRows?.score ?? 0;
+  const score = Number((scoreRows?.score ?? 0).toFixed(2));
   const terms = getTermsForScore(score);
 
   // Eligible for loan?
-  const loanEligible = score >= 20;
+  const loanEligible = score >= MIN_SCORE_FOR_LOAN;
 
   return {
     score,
