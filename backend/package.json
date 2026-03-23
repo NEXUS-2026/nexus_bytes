@@ -8,7 +8,8 @@
     "dev": "nodemon server.js",
     "migrate": "node config/migrate.js",
     "seed": "node scripts/seed.js",
-    "ensure-admin": "node scripts/ensureAdmin.js"
+    "ensure-admin": "node scripts/ensureAdmin.js",
+    "clear-data": "node scripts/clearData.js"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",
