@@ -15,6 +15,9 @@ import SubmitActivity  from "./pages/SubmitActivity";
 import VerifierPanel   from "./pages/VerifierPanel";
 import LoanApplication from "./pages/LoanApplication";
 import AdminPanel      from "./pages/AdminPanel";
+import BorrowerKYC     from "./pages/BorrowerKYC";
+import Activities      from "./pages/Activities";
+import BorrowerDirectory from "./pages/BorrowerDirectory";
 
 // ── Guards ────────────────────────────────────────────────────────────────────
 
@@ -47,6 +50,10 @@ export default function App() {
               <PrivateRoute roles={["borrower"]}><SubmitActivity /></PrivateRoute>
             }/>
 
+            <Route path="/activities" element={
+              <PrivateRoute roles={["borrower"]}><Activities /></PrivateRoute>
+            }/>
+
             <Route path="/verify" element={
               <PrivateRoute roles={["verifier", "admin"]}><VerifierPanel /></PrivateRoute>
             }/>
@@ -55,8 +62,16 @@ export default function App() {
               <PrivateRoute roles={["borrower"]}><LoanApplication /></PrivateRoute>
             }/>
 
+            <Route path="/kyc" element={
+              <PrivateRoute roles={["borrower"]}><BorrowerKYC /></PrivateRoute>
+            }/>
+
             <Route path="/lender" element={
               <PrivateRoute roles={["lender","admin"]}><LenderDashboard /></PrivateRoute>
+            }/>
+
+            <Route path="/borrowers" element={
+              <PrivateRoute roles={["lender","admin"]}><BorrowerDirectory /></PrivateRoute>
             }/>
 
             <Route path="/admin" element={

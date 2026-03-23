@@ -4,7 +4,7 @@ const db  = require("../config/db");
 
 /**
  * Verifies JWT from Authorization: Bearer <token>
- * Attaches req.user = { id, email, role, wallet_address }
+ * Attaches req.user = { id, email, role, wallet_address, access_status }
  */
 const authenticate = async (req, res, next) => {
   const header = req.headers.authorization;
@@ -16,7 +16,7 @@ const authenticate = async (req, res, next) => {
   try {
     const payload = jwt.verify(token, process.env.JWT_SECRET);
     const { rows } = await db.query(
-      "SELECT id, email, role, wallet_address FROM users WHERE id = $1",
+      "SELECT id, email, role, wallet_address, access_status FROM users WHERE id = $1",
       [payload.userId]
     );
     if (!rows.length) return res.status(401).json({ error: "User not found" });

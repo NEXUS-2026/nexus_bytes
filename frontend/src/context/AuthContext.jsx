@@ -23,8 +23,10 @@ export function AuthProvider({ children }) {
   // ── Auth actions ──────────────────────────────────────────────────────────
   const signup = async (payload) => {
     const { data } = await api.post("/auth/signup", payload);
-    localStorage.setItem("token", data.token);
-    setUser(data.user);
+    if (data.token) {
+      localStorage.setItem("token", data.token);
+      setUser(data.user);
+    }
     return data;
   };
 

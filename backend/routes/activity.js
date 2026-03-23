@@ -8,6 +8,7 @@ const ipfsService = require("../services/ipfs");
 
 const router  = express.Router();
 const upload  = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } });
+const ALLOWED_CATEGORIES = ["health", "education", "sustainability", "livelihood", "digital", "community"];
 
 // ─── POST /activity — submit a new activity ──────────────────────────────────
 
@@ -18,7 +19,7 @@ router.post(
   upload.single("document"),
   [
     body("title").trim().notEmpty().withMessage("Title required"),
-    body("category").isIn(["health", "education", "sustainability"]),
+    body("category").isIn(ALLOWED_CATEGORIES),
     body("description").optional().trim(),
   ],
   async (req, res) => {

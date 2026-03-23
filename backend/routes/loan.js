@@ -7,6 +7,63 @@ const scoreEngine = require("../services/scoreEngine");
 
 const router = express.Router();
 
+function computeBorrowerRisk({
+  currentScore,
+  repaymentRate,
+  loanCount,
+  pendingLoans,
+  rejectedActivities,
+  totalActivities,
+  kycStatus,
+}) {
+  let score = 0;
+  const factors = [];
+
+  if (repaymentRate === null) {
+    score += 20;
+    factors.push("limited_repayment_history");
+  } else {
+    const repaymentPenalty = Math.round((100 - repaymentRate) * 0.45);
+    score += repaymentPenalty;
+    if (repaymentPenalty >= 20) factors.push("low_repayment_rate");
+  }
+
+  if (loanCount > 0) {
+    const pendingRatio = pendingLoans / loanCount;
+    const pendingPenalty = Math.round(pendingRatio * 20);
+    score += pendingPenalty;
+    if (pendingPenalty >= 10) factors.push("high_pending_loan_ratio");
+  }
+
+  if (totalActivities > 0) {
+    const rejectedRatio = rejectedActivities / totalActivities;
+    const activityPenalty = Math.round(rejectedRatio * 20);
+    score += activityPenalty;
+    if (activityPenalty >= 10) factors.push("high_activity_rejection_ratio");
+  }
+
+  if (currentScore < 20) {
+    score += 20;
+    factors.push("very_low_impact_score");
+  } else if (currentScore < 50) {
+    score += 10;
+    factors.push("low_impact_score");
+  }
+
+  if (kycStatus === "pending") {
+    score += 10;
+    factors.push("kyc_pending");
+  } else if (kycStatus === "rejected") {
+    score += 25;
+    factors.push("kyc_rejected");
+  }
+
+  const clamped = Math.max(0, Math.min(100, score));
+  const level = clamped >= 70 ? "high" : clamped >= 40 ? "medium" : "low";
+
+  return { score: clamped, level, factors };
+}
+
 // ─── POST /loan/apply ─────────────────────────────────────────────────────────
 
 router.post(
@@ -28,10 +85,10 @@ router.post(
       const scoreData = await scoreEngine.getUserScore(req.user.id);
       const score     = scoreData.score;
 
-      if (score < 20) {
+      if (score < scoreEngine.SCORE_FLOOR_FOR_LOAN) {
         return res.status(400).json({
           error: "Your Impact Score is too low. Submit and verify more activities first.",
-          score, minimumRequired: 20,
+          score, minimumRequired: scoreEngine.SCORE_FLOOR_FOR_LOAN,
         });
       }
 
@@ -47,18 +104,37 @@ router.post(
         });
       }
 
-      const terms = calculateTerms(score);
+      const [{ rows: userRows }, { rows: repaymentRows }] = await Promise.all([
+        db.query("SELECT kyc_status FROM users WHERE id = $1", [req.user.id]),
+        db.query(
+          `SELECT COUNT(*)::int AS total, COUNT(*) FILTER (WHERE status = 'repaid')::int AS repaid
+           FROM loans
+           WHERE user_id = $1`,
+          [req.user.id]
+        ),
+      ]);
+
+      const total = Number(repaymentRows[0]?.total || 0);
+      const repaid = Number(repaymentRows[0]?.repaid || 0);
+      const repaymentRate = total > 0 ? Math.round((repaid / total) * 100) : null;
+
+      const terms = scoreEngine.suggestLoanTerms({
+        score,
+        kycStatus: userRows[0]?.kyc_status || "pending",
+        repaymentRate,
+        durationDays: Number(duration_days),
+      });
 
       if (amount > terms.maxAmount) {
         return res.status(400).json({
-          error: `Your score tier allows a maximum of $${terms.maxAmount}.`,
+          error: `Your profile currently allows a maximum of INR ${terms.maxAmount}.`,
           maxAmount: terms.maxAmount, tier: terms.tier,
         });
       }
 
       const { rows } = await db.query(
-        `INSERT INTO loans (user_id, amount, interest_rate, duration_days, status, tier, score_at_apply, purpose)
-         VALUES ($1, $2, $3, $4, 'pending', $5, $6, $7) RETURNING *`,
+        `INSERT INTO loans (user_id, amount, interest_rate, duration_days, status, tier, score_at_apply, purpose, due_date)
+         VALUES ($1, $2, $3, $4, 'pending', $5, $6, $7, NOW() + ($4 * INTERVAL '1 day')) RETURNING *`,
         [req.user.id, amount, terms.interestRate, duration_days, terms.tier, score, purpose || null]
       );
 
@@ -77,18 +153,229 @@ router.post(
 
 router.get("/pending", authenticate, requireRole(["lender", "admin"]), async (req, res) => {
   try {
+    const { q, tier, minScore, maxScore, minAmount, maxAmount, sortBy = "applied_at", sortOrder = "asc" } = req.query;
+    const where = ["l.status = 'pending'"];
+    const params = [];
+
+    if (q) {
+      params.push(`%${String(q).trim()}%`);
+      where.push(`(u.full_name ILIKE $${params.length} OR u.email ILIKE $${params.length})`);
+    }
+    if (tier && ["low", "medium", "high"].includes(String(tier).toLowerCase())) {
+      params.push(String(tier).toLowerCase());
+      where.push(`l.tier = $${params.length}`);
+    }
+    if (minScore !== undefined) {
+      const parsed = Number(minScore);
+      if (!Number.isNaN(parsed)) {
+        params.push(parsed);
+        where.push(`COALESCE(s.score, 0) >= $${params.length}`);
+      }
+    }
+    if (maxScore !== undefined) {
+      const parsed = Number(maxScore);
+      if (!Number.isNaN(parsed)) {
+        params.push(parsed);
+        where.push(`COALESCE(s.score, 0) <= $${params.length}`);
+      }
+    }
+    if (minAmount !== undefined) {
+      const parsed = Number(minAmount);
+      if (!Number.isNaN(parsed)) {
+        params.push(parsed);
+        where.push(`l.amount >= $${params.length}`);
+      }
+    }
+    if (maxAmount !== undefined) {
+      const parsed = Number(maxAmount);
+      if (!Number.isNaN(parsed)) {
+        params.push(parsed);
+        where.push(`l.amount <= $${params.length}`);
+      }
+    }
+
+    const sortable = {
+      applied_at: "l.applied_at",
+      amount: "l.amount",
+      score: "COALESCE(s.score, 0)",
+      duration: "l.duration_days",
+    };
+    const sortField = sortable[String(sortBy).toLowerCase()] || sortable.applied_at;
+    const sortDirection = String(sortOrder).toLowerCase() === "desc" ? "DESC" : "ASC";
+
     const { rows } = await db.query(
       `SELECT l.*, u.full_name, u.email, u.wallet_address, u.phone,
               COALESCE(s.score, 0) AS current_score
        FROM loans l
        JOIN users u ON u.id = l.user_id
        LEFT JOIN impact_scores s ON s.user_id = l.user_id
-       WHERE l.status = 'pending'
-       ORDER BY l.applied_at ASC`
+       WHERE ${where.join(" AND ")}
+       ORDER BY ${sortField} ${sortDirection}`,
+      params
     );
     res.json(rows);
   } catch (err) {
     res.status(500).json({ error: "Failed to fetch pending loans" });
+  }
+});
+
+// ─── GET /loan/borrowers — lender borrower directory (borrowers with loans) ─
+
+router.get("/borrowers", authenticate, requireRole(["lender", "admin"]), async (req, res) => {
+  try {
+    const {
+      q,
+      kyc,
+      minScore,
+      maxScore,
+      sortBy = "last_applied_at",
+      sortOrder = "desc",
+      limit = 30,
+      offset = 0,
+    } = req.query;
+
+    const params = [];
+    const where = [];
+
+    if (q) {
+      params.push(`%${String(q).trim()}%`);
+      where.push(`(u.full_name ILIKE $${params.length} OR u.email ILIKE $${params.length})`);
+    }
+    if (kyc && ["pending", "approved", "rejected"].includes(String(kyc).toLowerCase())) {
+      params.push(String(kyc).toLowerCase());
+      where.push(`u.kyc_status = $${params.length}`);
+    }
+    if (minScore !== undefined) {
+      const parsed = Number(minScore);
+      if (!Number.isNaN(parsed)) {
+        params.push(parsed);
+        where.push(`COALESCE(s.score, 0) >= $${params.length}`);
+      }
+    }
+    if (maxScore !== undefined) {
+      const parsed = Number(maxScore);
+      if (!Number.isNaN(parsed)) {
+        params.push(parsed);
+        where.push(`COALESCE(s.score, 0) <= $${params.length}`);
+      }
+    }
+
+    const sortable = {
+      score: "COALESCE(s.score, 0)",
+      loans: "la.loan_count",
+      repaid: "la.repaid_loans",
+      pending: "la.pending_loans",
+      last_applied_at: "la.last_applied_at",
+      name: "u.full_name",
+    };
+    const sortField = sortable[String(sortBy).toLowerCase()] || sortable.last_applied_at;
+    const sortDirection = String(sortOrder).toLowerCase() === "asc" ? "ASC" : "DESC";
+
+    const parsedLimit = Math.min(Math.max(Number(limit) || 30, 1), 100);
+    const parsedOffset = Math.max(Number(offset) || 0, 0);
+
+    params.push(parsedLimit);
+    const limitIndex = params.length;
+    params.push(parsedOffset);
+    const offsetIndex = params.length;
+
+    const whereClause = where.length ? `WHERE ${where.join(" AND ")}` : "";
+
+    const query = `
+      WITH loan_agg AS (
+        SELECT
+          l.user_id,
+          COUNT(*) AS loan_count,
+          COUNT(*) FILTER (WHERE l.status = 'pending') AS pending_loans,
+          COUNT(*) FILTER (WHERE l.status = 'approved') AS approved_loans,
+          COUNT(*) FILTER (WHERE l.status = 'repaid') AS repaid_loans,
+          MAX(l.applied_at) AS last_applied_at
+        FROM loans l
+        GROUP BY l.user_id
+      ), activity_agg AS (
+        SELECT
+          a.user_id,
+          COUNT(*) FILTER (WHERE a.status = 'verified') AS verified_activities,
+          COUNT(*) FILTER (WHERE a.status = 'pending') AS pending_activities,
+          COUNT(*) FILTER (WHERE a.status = 'rejected') AS rejected_activities,
+          COUNT(*) AS total_activities
+        FROM activities a
+        GROUP BY a.user_id
+      )
+      SELECT
+        u.id,
+        u.full_name,
+        u.email,
+        u.phone,
+        u.wallet_address,
+        u.kyc_status,
+        u.created_at,
+        COALESCE(s.score, 0) AS current_score,
+        la.loan_count,
+        la.pending_loans,
+        la.approved_loans,
+        la.repaid_loans,
+        la.last_applied_at,
+        COALESCE(aa.verified_activities, 0) AS verified_activities,
+        COALESCE(aa.pending_activities, 0) AS pending_activities,
+        COALESCE(aa.rejected_activities, 0) AS rejected_activities,
+        COALESCE(aa.total_activities, 0) AS total_activities,
+        CASE
+          WHEN la.loan_count = 0 THEN NULL
+          ELSE ROUND((la.repaid_loans::numeric / la.loan_count::numeric) * 100, 0)
+        END AS repayment_rate
+      FROM loan_agg la
+      JOIN users u ON u.id = la.user_id
+      LEFT JOIN impact_scores s ON s.user_id = u.id
+      LEFT JOIN activity_agg aa ON aa.user_id = u.id
+      ${whereClause}
+      ORDER BY ${sortField} ${sortDirection}
+      LIMIT $${limitIndex} OFFSET $${offsetIndex}
+    `;
+
+    const countQuery = `
+      WITH loan_users AS (
+        SELECT DISTINCT user_id FROM loans
+      )
+      SELECT COUNT(*)::int AS total
+      FROM users u
+      JOIN loan_users lu ON lu.user_id = u.id
+      LEFT JOIN impact_scores s ON s.user_id = u.id
+      ${whereClause}
+    `;
+
+    const [{ rows }, { rows: totalRows }] = await Promise.all([
+      db.query(query, params),
+      db.query(countQuery, params.slice(0, params.length - 2)),
+    ]);
+
+    res.json({
+      items: rows.map((row) => {
+        const repaymentRate = row.repayment_rate !== null ? Number(row.repayment_rate) : null;
+        const risk = computeBorrowerRisk({
+          currentScore: Number(row.current_score || 0),
+          repaymentRate,
+          loanCount: Number(row.loan_count || 0),
+          pendingLoans: Number(row.pending_loans || 0),
+          rejectedActivities: Number(row.rejected_activities || 0),
+          totalActivities: Number(row.total_activities || 0),
+          kycStatus: row.kyc_status,
+        });
+        return {
+          ...row,
+          repayment_rate: repaymentRate,
+          risk_level: risk.level,
+          risk_score: risk.score,
+          risk_factors: risk.factors,
+        };
+      }),
+      total: totalRows[0]?.total || 0,
+      limit: parsedLimit,
+      offset: parsedOffset,
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Failed to fetch borrower directory" });
   }
 });
 
@@ -114,6 +401,107 @@ router.get("/status", authenticate, async (req, res) => {
   }
 });
 
+// ─── GET /loan/export — lender CSV export ───────────────────────────────────
+
+router.get("/export", authenticate, requireRole(["lender", "admin"]), async (req, res) => {
+  try {
+    const { status, fallbackToAll = "true" } = req.query;
+    const params = [];
+    let where = "";
+
+    if (status && ["pending", "approved", "rejected", "repaid", "repayment_requested"].includes(String(status).toLowerCase())) {
+      params.push(String(status).toLowerCase());
+      where = `WHERE l.status = $${params.length}`;
+    }
+
+    const baseQuery =
+      `SELECT
+         l.id,
+         l.status,
+         l.tier,
+         l.amount,
+         l.approved_amount,
+         l.interest_rate,
+         l.duration_days,
+         l.applied_at,
+         l.decided_at,
+         l.due_date,
+         l.repaid_at,
+         l.lender_note,
+         u.full_name,
+         u.email,
+         u.kyc_status,
+         COALESCE(s.score, 0) AS current_score
+       FROM loans l
+       JOIN users u ON u.id = l.user_id
+       LEFT JOIN impact_scores s ON s.user_id = l.user_id`;
+
+    let { rows } = await db.query(`${baseQuery} ${where} ORDER BY l.applied_at DESC`, params);
+
+    if (
+      rows.length === 0 &&
+      status &&
+      String(fallbackToAll).toLowerCase() !== "false"
+    ) {
+      const full = await db.query(`${baseQuery} ORDER BY l.applied_at DESC`);
+      rows = full.rows;
+      res.setHeader("X-Export-Fallback", "all");
+    }
+
+    const headers = [
+      "loan_id",
+      "borrower_name",
+      "borrower_email",
+      "kyc_status",
+      "status",
+      "tier",
+      "requested_amount",
+      "approved_amount",
+      "interest_rate",
+      "duration_days",
+      "current_score",
+      "applied_at",
+      "decided_at",
+      "due_date",
+      "repaid_at",
+      "lender_note",
+    ];
+
+    const lines = [headers.join(",")];
+    rows.forEach((r) => {
+      const values = [
+        r.id,
+        r.full_name,
+        r.email,
+        r.kyc_status,
+        r.status,
+        r.tier,
+        r.amount,
+        r.approved_amount,
+        r.interest_rate,
+        r.duration_days,
+        r.current_score,
+        r.applied_at,
+        r.decided_at,
+        r.due_date,
+        r.repaid_at,
+        r.lender_note,
+      ].map(toCsvCell);
+      lines.push(values.join(","));
+    });
+
+    const csv = lines.join("\n");
+    const stamp = new Date().toISOString().slice(0, 19).replace(/[T:]/g, "-");
+
+    res.setHeader("Content-Type", "text/csv; charset=utf-8");
+    res.setHeader("Content-Disposition", `attachment; filename=loan-export-${stamp}.csv`);
+    res.status(200).send(csv);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Failed to export loans" });
+  }
+});
+
 // ─── GET /loan/borrower/:userId — borrower profile for lender ────────────────
 
 router.get("/borrower/:userId", authenticate, requireRole(["lender", "admin"]), async (req, res) => {
@@ -121,17 +509,40 @@ router.get("/borrower/:userId", authenticate, requireRole(["lender", "admin"]), 
     const [userRes, scoreRes, activitiesRes, loansRes] = await Promise.all([
       db.query("SELECT id, full_name, email, phone, wallet_address, kyc_status, created_at FROM users WHERE id=$1", [req.params.userId]),
       db.query("SELECT score, last_synced_at FROM impact_scores WHERE user_id=$1", [req.params.userId]),
-      db.query("SELECT category, status, title, created_at FROM activities WHERE user_id=$1 ORDER BY created_at DESC", [req.params.userId]),
+      db.query(
+        `SELECT a.id, a.category, a.status, a.title, a.description, a.ipfs_hash, a.data_hash, a.created_at, a.verified_at,
+                v.full_name AS verified_by_name
+         FROM activities a
+         LEFT JOIN users v ON v.id = a.verified_by
+         WHERE a.user_id=$1
+         ORDER BY a.created_at DESC`,
+        [req.params.userId]
+      ),
       db.query("SELECT * FROM loans WHERE user_id=$1 ORDER BY applied_at DESC", [req.params.userId]),
     ]);
     if (!userRes.rows.length) return res.status(404).json({ error: "User not found" });
     const repaidLoans = loansRes.rows.filter(l => l.status === "repaid").length;
+    const pendingLoans = loansRes.rows.filter(l => l.status === "pending").length;
+    const repaymentRate = loansRes.rows.length > 0 ? Math.round((repaidLoans / loansRes.rows.length) * 100) : null;
+    const rejectedActivities = activitiesRes.rows.filter(a => a.status === "rejected").length;
+    const risk = computeBorrowerRisk({
+      currentScore: Number(scoreRes.rows[0]?.score ?? 0),
+      repaymentRate,
+      loanCount: loansRes.rows.length,
+      pendingLoans,
+      rejectedActivities,
+      totalActivities: activitiesRes.rows.length,
+      kycStatus: userRes.rows[0].kyc_status,
+    });
     res.json({
       user:          userRes.rows[0],
       score:         scoreRes.rows[0]?.score ?? 0,
       activities:    activitiesRes.rows,
       loans:         loansRes.rows,
-      repaymentRate: loansRes.rows.length > 0 ? Math.round((repaidLoans / loansRes.rows.length) * 100) : null,
+      repaymentRate,
+      riskScore: risk.score,
+      riskLevel: risk.level,
+      riskFactors: risk.factors,
     });
   } catch (err) {
     res.status(500).json({ error: "Failed to fetch borrower profile" });
@@ -235,11 +646,13 @@ router.post("/:id/repay", authenticate, async (req, res) => {
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
-function calculateTerms(score) {
-  if (score < 20) return { tier: "none",   interestRate: 0,  maxAmount: 0 };
-  if (score > 80) return { tier: "low",    interestRate: 5,  maxAmount: 5000 };
-  if (score > 50) return { tier: "medium", interestRate: 12, maxAmount: 2000 };
-  return           { tier: "high",   interestRate: 20, maxAmount: 500 };
+function toCsvCell(value) {
+  if (value === null || value === undefined) return "";
+  const str = String(value);
+  if (/[",\n]/.test(str)) {
+    return `"${str.replace(/"/g, '""')}"`;
+  }
+  return str;
 }
 
 module.exports = router;

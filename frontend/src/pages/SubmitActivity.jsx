@@ -11,6 +11,24 @@ const CATEGORIES = [
   { id: "sustainability", label: "Sustainability",  icon: <Leaf size={20} />,      desc: "+15 pts — NGO work, environmental activities" },
 ];
 
+const TEMPLATES = {
+  health: [
+    { title: "Health Checkup Completed", description: "Completed annual health checkup at registered clinic." },
+    { title: "Vaccination Drive Participation", description: "Participated in community vaccination drive and submitted proof." },
+    { title: "Blood Donation Camp", description: "Donated blood in local camp with participation certificate." },
+  ],
+  education: [
+    { title: "Digital Literacy Certificate", description: "Completed digital literacy course and assessment." },
+    { title: "Financial Literacy Workshop", description: "Attended financial literacy workshop for small business owners." },
+    { title: "Skill Training Program", description: "Completed short-term vocational training with certificate." },
+  ],
+  sustainability: [
+    { title: "Tree Plantation Activity", description: "Participated in local plantation drive with NGO verification." },
+    { title: "Waste Segregation Initiative", description: "Implemented waste segregation process in market area." },
+    { title: "Clean Energy Adoption", description: "Adopted cleaner energy setup and documented implementation." },
+  ],
+};
+
 export default function SubmitActivity() {
   const navigate = useNavigate();
   const [form, setForm] = useState({ title: "", description: "", category: "health" });
@@ -73,7 +91,24 @@ export default function SubmitActivity() {
 
         {/* Title */}
         <div>
-          <label className="block text-sm font-medium text-gray-700 mb-1">Title *</label>
+          <div className="flex items-center justify-between mb-1">
+            <label className="block text-sm font-medium text-gray-700">Title *</label>
+            <select
+              onChange={(e) => {
+                const selected = TEMPLATES[form.category].find((t) => t.title === e.target.value);
+                if (selected) {
+                  setForm((f) => ({ ...f, title: selected.title, description: selected.description }));
+                }
+              }}
+              className="text-xs border border-gray-200 rounded px-2 py-1"
+              defaultValue=""
+            >
+              <option value="" disabled>Use quick template</option>
+              {TEMPLATES[form.category].map((t) => (
+                <option key={t.title} value={t.title}>{t.title}</option>
+              ))}
+            </select>
+          </div>
           <input
             value={form.title}
             onChange={(e) => setForm((f) => ({ ...f, title: e.target.value }))}

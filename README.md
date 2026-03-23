@@ -117,13 +117,19 @@ createdb impactscore
 psql impactscore < config/001_init.sql
 
 # Seed sample data (optional)
-node scripts/seed.js
+npm run seed
 ```
 
 **Start the API:**
 ```bash
 npm run dev       # Development (nodemon)
 npm start         # Production
+```
+
+**Ensure admin login (recommended for demos):**
+```bash
+npm run ensure-admin
+# default credentials: admin@demo.com / password123
 ```
 
 The API runs at `http://localhost:5000`. Test with:
